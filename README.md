@@ -1,5 +1,7 @@
 # **Candygram**
 
+![Candygram Logo](./resources/icons/candygram.png)
+
 **Candygram: A lightweight MongoDB management tool for exploring, querying, and managing your database.**
 
 ---
