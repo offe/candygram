@@ -1,6 +1,8 @@
 # **Candygram**
 
-![Candygram Logo](./resources/icons/candygram.png)
+<p align="center">
+  <img src="./resources/icons/candygram.png" alt="Candygram Logo" width="200">
+</p>
 
 **Candygram: A lightweight MongoDB management tool for exploring, querying, and managing your database.**
 
