@@ -95,30 +95,6 @@
 
 ---
 
-## **Directory Structure**
-
-```plaintext
-candygram/
-├── LICENSE               # License file
-├── README.md             # Project documentation
-├── bin/                  # Neutralino.js binaries
-├── dist/                 # Output of built executables
-├── neutralino.config.json # App configuration
-├── resources/            # All app resources
-│   ├── index.html        # Main HTML file
-│   ├── app.js            # Clipboard and app logic
-│   ├── assets/
-│   │   └── css/
-│   │       └── tailwind.css # TailwindCSS styles
-│   ├── js/
-│   │   ├── main.js       # App entry point
-│   │   └── neutralino.js
-│   └── icons/
-│       ├── appIcon.png   # App icon
-```
-
----
-
 ## **Licensing**
 
 Candygram is available under a **dual-license model**:
@@ -134,8 +110,6 @@ See the [LICENSE](./LICENSE) file for the full terms.
 
 - For proprietary use, you can purchase a commercial license.
 - This license allows you to use Candygram in closed-source projects without the restrictions of the GPL.
-
-Contact [your-email@example.com](mailto:your-email@example.com) for commercial licensing details.
 
 ---
 
@@ -161,7 +135,6 @@ We welcome contributions! Please follow these steps:
 If you encounter any issues or have questions, feel free to:
 
 - Open an issue on [GitHub](#).
-- Contact us at [your-email@example.com](mailto:your-email@example.com).
 
 ---
 
