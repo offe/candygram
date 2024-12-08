@@ -1,24 +1,57 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Clipboard Viewer</title>
-    <!-- Link to TailwindCSS -->
-    <link rel="stylesheet" href="/assets/css/tailwind.css">
-</head>
-<body class="bg-gray-100 flex items-center justify-center h-screen">
-    <div class="w-full bg-white shadow-lg rounded-lg p-6">
-        <h1 class="text-xl font-bold text-gray-700 mb-4">Clipboard Content</h1>
-        <textarea id="clipboard-content" 
-                  class="w-full h-40 border border-gray-300 rounded-md p-2 text-sm"
-                  readonly></textarea>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="/libs/tailwindcss.3.4.16.min.js" defer></script>
+    <meta
+      name="description"
+      content="Candygram - A lightweight MongoDB management tool."
+    />
+    <meta name="author" content="Your Name or Company" />
+    <meta
+      name="keywords"
+      content="MongoDB, Database Management, Clipboard Viewer"
+    />
+    <title>Candygram</title>
+    <!-- Link to TailwindCSS 
+    <link rel="stylesheet" href="/assets/css/tailwind.css" />
+     -->
+  </head>
+  <body class="bg-gray-100 flex flex-col items-center p-4">
+    <!-- Connections List -->
+    <div class="mt-4 w-full max-w-lg">
+      <h2 class="text-lg font-bold text-gray-700">Connections</h2>
+      <ul id="connection-list" class="mt-2 space-y-1"></ul>
+      <button
+        id="add-new-button"
+        class="mt-2 bg-sky-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md"
+        aria-label="Add a new connection"
+      >
+        Add New
+      </button>
+    </div>
+
+    <!-- Form Container -->
+    <div id="form-container" class="mt-4 w-full max-w-lg"></div>
+
+    <!-- Clipboard Viewer -->
+    <div class="mt-4 w-full max-w-lg bg-white shadow-lg rounded-lg p-6">
+      <h1 class="text-xl font-bold text-gray-700 mb-4">Clipboard Content</h1>
+      <textarea
+        id="clipboard-content"
+        class="w-full h-40 border border-gray-300 rounded-md p-2 text-sm"
+        readonly
+        aria-label="Clipboard Content"
+      ></textarea>
     </div>
 
     <!-- Neutralino.js client -->
-    <script src="/js/neutralino.js"></script>
-    <!-- Your app's source files -->
-    <script src="/js/main.js"></script>
-    <script src="/app.js"></script>
-</body>
+    <script src="/js/neutralino.js" defer></script>
+    <!-- External libraries -->
+    <script src="/libs/unistore-3.5.2.min.js" defer></script>
+    <!-- Candygram's source files -->
+    <script src="/js/main.js" defer></script>
+    <script src="/app.js" defer></script>
+  </body>
 </html>
