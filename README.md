@@ -19,6 +19,24 @@
 
 ---
 
+## **Architecture & Decisions**
+
+- **MongoDB Integration Strategy**: Candygram uses the official MongoDB Node.js driver through a Neutralino extension or helper service. We intentionally do **not** bundle the `mongosh` binary so the app remains lightweight, avoids per-OS packaging of external executables, and can stream structured responses directly into the UI.
+
+---
+
+## **Roadmap: Clipboard ObjectId Lookup Milestone**
+
+1. **Connection URL Entry**: Add a minimal form that lets the user type a MongoDB connection string and validates its shape before saving. _Test_: component/unit test that rejects malformed URLs and accepts valid SRV/standard URIs.
+2. **Persist & Edit Connections**: Store connection strings in the existing JSON config with friendly names and allow editing/updating entries without duplication. _Test_: write persistence tests that cover add, edit, and reload scenarios.
+3. **Active Connection Selection**: Let the user mark one saved connection as “active” and expose that choice to the application state used for lookups. _Test_: UI/state test verifying the active flag switches correctly and that lookups are disabled when nothing is selected.
+4. **Backend Handshake**: Implement a Neutralino extension command that opens the active connection, pings the server, and retrieves a list of collection names—logging them for now. _Test_: integration test against a test MongoDB instance (or stub) that asserts collection names are returned and errors surface cleanly.
+5. **Connection Feedback in UI**: Surface the handshake status (success/error plus collection names) in the Candygram window so the user can confirm the connection before any clipboard work. _Test_: component test that renders success, loading, and failure states.
+6. **Clipboard ObjectId Detection**: Extend the clipboard watcher to detect 24-character hex strings and only trigger lookups when an active connection exists. _Test_: unit test for the detection helper plus an integration test that simulates clipboard updates.
+7. **Lookup & JSON Display**: Wire a backend command that fetches the document for the detected ObjectId and render its JSON payload inside the UI. _Test_: end-to-end test copying a valid ObjectId, ensuring the document appears, and an error path when the ID is missing.
+
+---
+
 ## **Technologies Used**
 
 - **[Neutralino.js](https://neutralino.js.org)**: A lightweight framework for cross-platform desktop applications.
