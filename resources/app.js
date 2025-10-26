@@ -30,6 +30,156 @@ const MENU_ACTION_MAP = {
   "menu:edit:selectAll": "selectAll",
 };
 
+const CLIPBOARD_STATUS_ELEMENT_ID = "clipboard-status";
+const CLIPBOARD_OUTPUT_ELEMENT_ID = "clipboard-output";
+const OBJECT_ID_INPUT_ELEMENT_ID = "objectid-input";
+const CLIPBOARD_SCAN_TOGGLE_ELEMENT_ID = "clipboard-scan-toggle";
+const COLLECTIONS_STATUS_ELEMENT_ID = "collections-status";
+const COLLECTIONS_LIST_ELEMENT_ID = "collections-list";
+const CLIPBOARD_STATUS_TONES = {
+  info: "text-gray-600",
+  success: "text-green-600",
+  error: "text-red-600",
+  warning: "text-yellow-600",
+};
+
+const SIDEBAR_TRANSITION_DURATION_MS = 300;
+
+// React icon loading utilities
+const REACT_ICON_SOURCES = {
+  react: "https://esm.sh/react@18.2.0",
+  reactDomServer: "https://esm.sh/react-dom@18.2.0/server?deps=react@18.2.0",
+  reactIconsFa: "https://esm.sh/react-icons@4.12.0/fa?deps=react@18.2.0",
+};
+
+const ReactIconLoader = (() => {
+  let loadPromise = null;
+
+  async function loadModules() {
+    if (!loadPromise) {
+      loadPromise = Promise.all([
+        import(REACT_ICON_SOURCES.react),
+        import(REACT_ICON_SOURCES.reactDomServer),
+        import(REACT_ICON_SOURCES.reactIconsFa),
+      ])
+        .then(([reactModule, reactDomServerModule, iconModule]) => {
+          const ReactExport = reactModule.default || reactModule;
+          if (!ReactExport || typeof ReactExport.createElement !== "function") {
+            throw new Error("React.createElement is unavailable.");
+          }
+
+          const renderToStaticMarkup =
+            reactDomServerModule.renderToStaticMarkup ||
+            (reactDomServerModule.default
+              ? reactDomServerModule.default.renderToStaticMarkup
+              : null);
+
+          if (typeof renderToStaticMarkup !== "function") {
+            throw new Error(
+              "ReactDOMServer.renderToStaticMarkup is unavailable.",
+            );
+          }
+
+          return {
+            React: ReactExport,
+            renderToStaticMarkup,
+            icons: iconModule,
+          };
+        })
+        .catch((error) => {
+          console.error("Failed to load react-icons bundle:", error);
+          loadPromise = null;
+          throw error;
+        });
+    }
+
+    return loadPromise;
+  }
+
+  return {
+    async renderIcon(targetElement, iconName, { className, title } = {}) {
+      if (!targetElement) {
+        return;
+      }
+
+      try {
+        const { React, renderToStaticMarkup, icons } = await loadModules();
+        const IconComponent = icons[iconName];
+
+        if (typeof IconComponent !== "function") {
+          console.warn(`Icon "${iconName}" could not be found in react-icons/fa.`);
+          return;
+        }
+
+        const props = {
+          focusable: "false",
+          "aria-hidden": "true",
+        };
+
+        if (className) {
+          props.className = className;
+        }
+
+        if (title) {
+          props.title = title;
+        }
+
+        const markup = renderToStaticMarkup(
+          React.createElement(IconComponent, props),
+        );
+
+        targetElement.innerHTML = markup;
+      } catch (error) {
+        console.error(`Failed to render icon "${iconName}":`, error);
+      }
+    },
+  };
+})();
+
+const ICON_BUTTON_BASE_CLASSES =
+  "inline-flex h-8 w-8 items-center justify-center rounded-md border border-transparent p-1 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1";
+
+function createIconButton({
+  iconName,
+  ariaLabel,
+  buttonClass = "",
+  iconClass = "w-4 h-4",
+  title,
+  fallbackContent = "",
+}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `${ICON_BUTTON_BASE_CLASSES} ${buttonClass}`.trim();
+
+  if (ariaLabel) {
+    button.setAttribute("aria-label", ariaLabel);
+  }
+
+  if (title || ariaLabel) {
+    button.title = title || ariaLabel;
+  }
+
+  const srOnly = document.createElement("span");
+  srOnly.className = "sr-only";
+  srOnly.textContent = ariaLabel || title || "";
+  button.appendChild(srOnly);
+
+  const iconContainer = document.createElement("span");
+  iconContainer.className = "flex items-center justify-center";
+  iconContainer.setAttribute("aria-hidden", "true");
+  if (fallbackContent) {
+    iconContainer.textContent = fallbackContent;
+  }
+  button.appendChild(iconContainer);
+
+  ReactIconLoader.renderIcon(iconContainer, iconName, {
+    className: iconClass,
+    title: title || ariaLabel,
+  });
+
+  return button;
+}
+
 function isEditableElement(element) {
   if (!element || element.readOnly || element.disabled) {
     return false;
@@ -235,15 +385,561 @@ function registerEditingShortcuts() {
   });
 }
 let lastClipboardContent = "";
+let clipboardLookupSequence = 0;
+let lastActiveConnectionId = null;
+let isClipboardScanEnabled = CLIPBOARD_MONITORING_ENABLED;
+let objectIdInputValue = "";
+let collectionsRequestSequence = 0;
+let lastConnectionsSnapshot = null;
+let lastActiveConnectionSignature = null;
+
+function getClipboardStatusElement() {
+  return document.getElementById(CLIPBOARD_STATUS_ELEMENT_ID);
+}
+
+function getClipboardOutputElement() {
+  return document.getElementById(CLIPBOARD_OUTPUT_ELEMENT_ID);
+}
+
+function updateClipboardMessage(message, tone = "info") {
+  const element = getClipboardStatusElement();
+  if (!element) {
+    return;
+  }
+
+  const toneClass = CLIPBOARD_STATUS_TONES[tone] || CLIPBOARD_STATUS_TONES.info;
+  element.textContent = message;
+  element.className = `text-sm ${toneClass}`;
+}
+
+function clearClipboardOutput() {
+  const outputElement = getClipboardOutputElement();
+  if (!outputElement) {
+    return;
+  }
+
+  outputElement.innerHTML = "";
+  outputElement.classList.add("hidden");
+}
+
+function getObjectIdInputElement() {
+  return document.getElementById(OBJECT_ID_INPUT_ELEMENT_ID);
+}
+
+function getClipboardScanToggleElement() {
+  return document.getElementById(CLIPBOARD_SCAN_TOGGLE_ELEMENT_ID);
+}
+
+function applyClipboardScanState() {
+  const toggle = getClipboardScanToggleElement();
+  if (toggle) {
+    toggle.checked = Boolean(isClipboardScanEnabled);
+    if (!CLIPBOARD_MONITORING_ENABLED) {
+      toggle.disabled = true;
+      toggle.title = "Clipboard scanning is unavailable.";
+    } else {
+      toggle.disabled = false;
+      toggle.removeAttribute("title");
+    }
+  }
+
+  const input = getObjectIdInputElement();
+  if (input) {
+    input.setAttribute("aria-live", "polite");
+  }
+}
+
+function setClipboardScanEnabled(enabled) {
+  const normalized = CLIPBOARD_MONITORING_ENABLED ? Boolean(enabled) : false;
+  if (normalized === isClipboardScanEnabled) {
+    return;
+  }
+
+  isClipboardScanEnabled = normalized;
+  applyClipboardScanState();
+
+  if (isClipboardScanEnabled) {
+    renderClipboardIdleState();
+    if (CLIPBOARD_MONITORING_ENABLED) {
+      getClipboardContent();
+    }
+  } else {
+    renderClipboardIdleState();
+  }
+}
+
+function setObjectIdInputValue(value, { fromClipboard = false } = {}) {
+  objectIdInputValue = typeof value === "string" ? value : "";
+  const input = getObjectIdInputElement();
+  if (input && input.value !== objectIdInputValue) {
+    input.value = objectIdInputValue;
+  }
+
+  if (fromClipboard && input) {
+    input.dataset.lastSource = "clipboard";
+  } else if (input) {
+    input.dataset.lastSource = "input";
+  }
+}
+
+function renderClipboardIdleState() {
+  const idleMessage = isClipboardScanEnabled
+    ? "Copy a MongoDB ObjectId to search the active connection."
+    : "Enter a MongoDB ObjectId to search the active connection.";
+  updateClipboardMessage(idleMessage, "info");
+  clearClipboardOutput();
+}
+
+function renderClipboardLoading(objectId) {
+  const outputElement = getClipboardOutputElement();
+  if (!outputElement) {
+    return;
+  }
+
+  outputElement.innerHTML = "";
+  const loadingMessage = document.createElement("div");
+  loadingMessage.className = "text-xs text-gray-500";
+  loadingMessage.textContent = `Running ObjectId lookup for ObjectId(${objectId})...`;
+  outputElement.appendChild(loadingMessage);
+  outputElement.classList.remove("hidden");
+}
+
+function renderClipboardMatches(matches) {
+  const outputElement = getClipboardOutputElement();
+  if (!outputElement) {
+    return;
+  }
+
+  outputElement.innerHTML = "";
+
+  matches.forEach((match) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "border border-gray-200 rounded-md p-3";
+
+    const heading = document.createElement("div");
+    heading.className = "text-sm font-semibold text-gray-700";
+    const collectionName = match && match.collection ? String(match.collection) : "unknown collection";
+    heading.textContent = `Found in ${collectionName}`;
+
+    const jsonBlock = document.createElement("pre");
+    jsonBlock.className =
+      "mt-2 text-xs bg-gray-50 rounded-md p-2 overflow-x-auto whitespace-pre-wrap font-mono text-gray-800";
+    const documentForDisplay = match && match.document ? match.document : {};
+    jsonBlock.textContent = JSON.stringify(documentForDisplay, null, 2);
+
+    wrapper.appendChild(heading);
+    wrapper.appendChild(jsonBlock);
+    outputElement.appendChild(wrapper);
+  });
+
+  outputElement.classList.remove("hidden");
+}
+
+function getFirstClipboardLine(text) {
+  if (!text) {
+    return "";
+  }
+
+  const normalized = String(text).replace(/\r\n/g, "\n");
+  const [firstLine] = normalized.split("\n");
+  const trimmed = (firstLine || "").trim();
+
+  if (trimmed.length > 120) {
+    return `${trimmed.slice(0, 117)}…`;
+  }
+
+  return trimmed;
+}
+
+function extractObjectIdFromClipboard(text) {
+  if (!text) {
+    return null;
+  }
+
+  const plain = text.trim();
+  const objectIdPattern = /^[0-9a-fA-F]{24}$/;
+
+  if (objectIdPattern.test(plain)) {
+    return plain;
+  }
+
+  const objectIdCallMatch = plain.match(/ObjectId\((['"])([0-9a-fA-F]{24})\1\)/i);
+  if (objectIdCallMatch && objectIdCallMatch[2]) {
+    return objectIdCallMatch[2];
+  }
+
+  const oidPropertyMatch = plain.match(/"?\$oid"?\s*:\s*['"]([0-9a-fA-F]{24})['"]/);
+  if (oidPropertyMatch && oidPropertyMatch[1]) {
+    return oidPropertyMatch[1];
+  }
+
+  return null;
+}
+
+async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
+  const state = store.getState();
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === state.activeConnectionId)
+    : null;
+
+  if (!activeConnection) {
+    updateClipboardMessage(
+      `Ready to search for ObjectId(${objectId}). Select an active connection first.`,
+      "warning",
+    );
+    clearClipboardOutput();
+    return;
+  }
+
+  const lookupToken = ++clipboardLookupSequence;
+  updateClipboardMessage(`Searching for ObjectId(${objectId})...`, "info");
+  renderClipboardLoading(objectId);
+
+  try {
+    const lookupResult = await lookupObjectIdInConnection(activeConnection, objectId);
+
+    if (lookupToken !== clipboardLookupSequence) {
+      return;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(lookupResult, "collections")) {
+      const collections = normalizeCollectionsList(lookupResult.collections);
+
+      const updates = {
+        collectionsStatus: "loaded",
+        collectionsError: null,
+        activeConnectionCollections: collections,
+      };
+
+      if (typeof lookupResult.readOnly === "boolean") {
+        updates.activeConnectionReadOnly = lookupResult.readOnly;
+      }
+
+      store.setState(updates);
+    }
+
+    if (lookupResult.status === "dependency_missing") {
+      store.setState({
+        collectionsStatus: "error",
+        collectionsError: lookupResult.message ||
+          "MongoDB driver dependency is missing. Run \"npm install\" and try again.",
+        activeConnectionCollections: [],
+        activeConnectionReadOnly: null,
+      });
+    }
+
+    if (lookupResult.status === "found") {
+      updateClipboardMessage("Document lookup complete.", "success");
+      renderClipboardMatches(lookupResult.matches);
+      return;
+    }
+
+    if (
+      lookupResult.status === "not_found" ||
+      lookupResult.status === "no_collections"
+    ) {
+      updateClipboardMessage(`${objectId} Object not found.`, "error");
+      clearClipboardOutput();
+      return;
+    }
+
+    if (lookupResult.status === "dependency_missing") {
+      updateClipboardMessage(lookupResult.message, "error");
+      clearClipboardOutput();
+      return;
+    }
+
+    if (lookupResult.status === "invalid") {
+      updateClipboardMessage(lookupResult.message, "error");
+      clearClipboardOutput();
+      return;
+    }
+
+    updateClipboardMessage(
+      lookupResult.message || "Failed to search for the ObjectId.",
+      "error",
+    );
+    clearClipboardOutput();
+  } catch (error) {
+    if (lookupToken !== clipboardLookupSequence) {
+      return;
+    }
+
+    updateClipboardMessage(
+      (error && error.message) || "Unexpected error while processing the lookup.",
+      "error",
+    );
+    clearClipboardOutput();
+  }
+}
+
+async function lookupObjectIdInConnection(connection, objectId) {
+  if (!connection || !connection.uri) {
+    return {
+      status: "error",
+      message: "Active connection is missing a MongoDB URI.",
+    };
+  }
+
+  if (
+    !Neutralino ||
+    !Neutralino.os ||
+    typeof Neutralino.os.execCommand !== "function"
+  ) {
+    return {
+      status: "error",
+      message: "Neutralino OS command execution is unavailable.",
+    };
+  }
+
+  const escapedUri = escapeShellDoubleQuotes(connection.uri);
+  const escapedObjectId = escapeShellDoubleQuotes(objectId);
+  const command =
+    `node resources/scripts/findMongoDocument.js "${escapedUri}" "${escapedObjectId}"`;
+
+  try {
+    const result = await Neutralino.os.execCommand(command);
+    const exitCode = result && typeof result.exitCode !== "undefined"
+      ? Number(result.exitCode)
+      : null;
+    const stdOut = result && result.stdOut ? String(result.stdOut).trim() : "";
+    const stdErr = result && result.stdErr ? String(result.stdErr).trim() : "";
+
+    if (exitCode === 0) {
+      if (stdOut) {
+        const lines = stdOut.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line);
+            if (parsed && parsed.status) {
+              const collections = Array.isArray(parsed.collections)
+                ? parsed.collections
+                : parsed.status === "no_collections"
+                ? []
+                : null;
+
+              const readOnly =
+                typeof parsed.readOnly === "boolean" ? parsed.readOnly : null;
+
+              return {
+                status: parsed.status,
+                matches: Array.isArray(parsed.matches) ? parsed.matches : [],
+                collections,
+                readOnly,
+              };
+            }
+          } catch (jsonError) {
+            // Ignore invalid JSON lines
+          }
+        }
+      }
+
+      return {
+        status: "error",
+        message: "Lookup script returned an unexpected response.",
+        details: stdOut,
+      };
+    }
+
+    if (stdErr.includes("Missing dependency")) {
+      return {
+        status: "dependency_missing",
+        message: stdErr,
+      };
+    }
+
+    if (stdErr.includes("Invalid ObjectId")) {
+      return {
+        status: "invalid",
+        message: stdErr,
+      };
+    }
+
+    return {
+      status: "error",
+      message: stdErr || "Lookup script failed.",
+      exitCode,
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      message: (error && error.message) || "ObjectId lookup execution failed.",
+      error,
+    };
+  }
+}
+
+async function fetchCollectionsForConnection(connection) {
+  if (!connection || !connection.uri) {
+    throw new Error("Active connection is missing a MongoDB URI.");
+  }
+
+  if (
+    !Neutralino ||
+    !Neutralino.os ||
+    typeof Neutralino.os.execCommand !== "function"
+  ) {
+    throw new Error("Neutralino OS command execution is unavailable.");
+  }
+
+  const escapedUri = escapeShellDoubleQuotes(connection.uri);
+  const command = `node resources/scripts/listMongoCollections.js "${escapedUri}"`;
+
+  const result = await Neutralino.os.execCommand(command);
+  const exitCode = result && typeof result.exitCode !== "undefined"
+    ? Number(result.exitCode)
+    : null;
+  const stdOut = result && result.stdOut ? String(result.stdOut).trim() : "";
+  const stdErr = result && result.stdErr ? String(result.stdErr).trim() : "";
+
+  if (exitCode === 0 && stdOut) {
+    const lines = stdOut.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === "object") {
+          const collections = normalizeCollectionsList(parsed.collections);
+          const readOnly =
+            typeof parsed.readOnly === "boolean" ? parsed.readOnly : null;
+
+          return { collections, readOnly };
+        }
+      } catch (error) {
+        // Ignore invalid JSON lines
+      }
+    }
+
+    throw new Error("Collection listing script returned an unexpected response.");
+  }
+
+  if (stdErr.includes("Missing dependency")) {
+    throw new Error(stdErr);
+  }
+
+  throw new Error(stdErr || "Failed to load collections for the active connection.");
+}
+
+async function loadCollectionsForActiveConnection() {
+  const state = store.getState();
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === state.activeConnectionId)
+    : null;
+
+  const requestToken = ++collectionsRequestSequence;
+
+  if (!activeConnection) {
+    store.setState({
+      collectionsStatus: "idle",
+      collectionsError: null,
+      activeConnectionCollections: [],
+      activeConnectionReadOnly: null,
+    });
+    return;
+  }
+
+  store.setState({
+    collectionsStatus: "loading",
+    collectionsError: null,
+    activeConnectionCollections: [],
+    activeConnectionReadOnly: null,
+  });
+
+  try {
+    const { collections, readOnly } = await fetchCollectionsForConnection(
+      activeConnection,
+    );
+
+    if (requestToken !== collectionsRequestSequence) {
+      return;
+    }
+
+    const updates = {
+      collectionsStatus: "loaded",
+      collectionsError: null,
+      activeConnectionCollections: normalizeCollectionsList(collections),
+    };
+
+    if (typeof readOnly === "boolean") {
+      updates.activeConnectionReadOnly = readOnly;
+    }
+
+    store.setState(updates);
+  } catch (error) {
+    if (requestToken !== collectionsRequestSequence) {
+      return;
+    }
+
+    store.setState({
+      collectionsStatus: "error",
+      collectionsError:
+        (error && error.message) || "Failed to load collections for this connection.",
+      activeConnectionCollections: [],
+      activeConnectionReadOnly: null,
+    });
+  }
+}
+
+async function processClipboardContent(clipboardText) {
+  if (!isClipboardScanEnabled) {
+    return;
+  }
+
+  const trimmed = typeof clipboardText === "string" ? clipboardText.trim() : "";
+
+  if (!trimmed) {
+    setObjectIdInputValue("", { fromClipboard: true });
+    renderClipboardIdleState();
+    return;
+  }
+
+  const objectId = extractObjectIdFromClipboard(trimmed);
+  if (!objectId) {
+    const preview = getFirstClipboardLine(clipboardText);
+    updateClipboardMessage(
+      `Clipboard is not a valid ObjectId. First line: ${preview || "(empty)"}`,
+      "error",
+    );
+    clearClipboardOutput();
+    return;
+  }
+
+  setObjectIdInputValue(objectId, { fromClipboard: true });
+  await runObjectIdLookup(objectId, { source: "clipboard" });
+}
+
+function handleManualLookupRequest(rawValue, { showInvalidFeedback = false } = {}) {
+  const trimmed = typeof rawValue === "string" ? rawValue.trim() : "";
+
+  if (!trimmed) {
+    renderClipboardIdleState();
+    clearClipboardOutput();
+    return Promise.resolve();
+  }
+
+  const objectId = extractObjectIdFromClipboard(trimmed);
+  if (!objectId) {
+    if (trimmed.length >= 24) {
+      if (showInvalidFeedback) {
+        updateClipboardMessage("Input is not a valid ObjectId.", "error");
+      } else {
+        updateClipboardMessage("Enter a valid ObjectId to search.", "info");
+      }
+      clearClipboardOutput();
+    } else {
+      renderClipboardIdleState();
+    }
+
+    return Promise.resolve();
+  }
+
+  setObjectIdInputValue(objectId);
+
+  return runObjectIdLookup(objectId, { source: "input" });
+}
 
 // Function to monitor clipboard content
 async function getClipboardContent() {
-  if (!CLIPBOARD_MONITORING_ENABLED) {
-    return;
-  }
-  const { activeConnectionId } = store.getState();
-  if (!activeConnectionId) {
-    console.warn("No active connection selected. Clipboard monitoring paused.");
+  if (!CLIPBOARD_MONITORING_ENABLED || !isClipboardScanEnabled) {
     return;
   }
 
@@ -253,9 +949,8 @@ async function getClipboardContent() {
   try {
     const clipboardText = await Neutralino.clipboard.readText();
     if (clipboardText !== lastClipboardContent) {
-      document.getElementById("clipboard-content").value = clipboardText;
-      console.log(clipboardText);
       lastClipboardContent = clipboardText;
+      await processClipboardContent(clipboardText);
     }
   } catch (err) {
     console.error("Failed to read clipboard contents: ", err);
@@ -267,6 +962,10 @@ const initialState = {
   connections: [], // Array of MongoDB connections
   currentForm: null, // State for tracking the current form (edit or add)
   activeConnectionId: null,
+  activeConnectionCollections: [],
+  collectionsStatus: "idle",
+  collectionsError: null,
+  activeConnectionReadOnly: null,
 };
 
 // Create the store
@@ -446,6 +1145,7 @@ const actions = {
     }
 
     return {
+      ...state,
       connections,
       currentForm: null,
       activeConnectionId,
@@ -481,6 +1181,7 @@ const actions = {
     });
 
     return {
+      ...state,
       connections,
       currentForm: null,
       activeConnectionId,
@@ -500,6 +1201,7 @@ const actions = {
       );
 
     return {
+      ...state,
       connections,
       activeConnectionId: wasActive ? null : state.activeConnectionId,
     };
@@ -649,54 +1351,319 @@ function renderConnections(connections, activeConnectionId) {
 
   connections.forEach((connection) => {
     const listItem = document.createElement("li");
-    listItem.className = "flex items-center justify-between p-2 border-b";
+    listItem.className = "flex items-center justify-between gap-3 p-2 border-b";
     if (connection.id === activeConnectionId) {
       listItem.classList.add("bg-blue-100");
     }
 
-    const nameContainer = document.createElement("span");
-    nameContainer.textContent = connection.name;
-
-    const controls = document.createElement("div");
-    controls.className = "flex items-center";
+    const leftGroup = document.createElement("div");
+    leftGroup.className = "flex items-center gap-2";
 
     const activateButton = document.createElement("input");
     activateButton.type = "radio";
     activateButton.name = "active-connection";
-    activateButton.className = "mr-2";
+    activateButton.className =
+      "h-4 w-4 border-gray-300 text-sky-600 focus:ring-sky-500";
     activateButton.checked = connection.id === activeConnectionId;
     activateButton.setAttribute("aria-label", `Activate ${connection.name}`);
     activateButton.onclick = () => {
       setActiveConnection(connection.id);
     };
 
-    const editButton = document.createElement("button");
-    editButton.textContent = "Edit";
-    editButton.className =
-      "ml-2 bg-green-600 hover:bg-green-700 text-black font-bold py-1 px-3 rounded";
+    const nameContainer = document.createElement("span");
+    nameContainer.className = "text-sm font-medium text-gray-700";
+    nameContainer.textContent = connection.name;
+
+    leftGroup.appendChild(activateButton);
+    leftGroup.appendChild(nameContainer);
+
+    const controls = document.createElement("div");
+    controls.className = "flex items-center gap-2";
+
+    const editButton = createIconButton({
+      iconName: "FaEdit",
+      ariaLabel: `Edit ${connection.name}`,
+      buttonClass:
+        "text-sky-600 hover:text-sky-700 focus:ring-sky-500 hover:bg-sky-50",
+      iconClass: "w-4 h-4",
+      fallbackContent: "✎",
+    });
     editButton.onclick = () => {
       setCurrentForm({ type: "edit", connection });
     };
 
-    const deleteButton = document.createElement("button");
-    deleteButton.textContent = "Delete";
-    deleteButton.className =
-      "ml-2 bg-red-600 hover:bg-red-700 text-black font-bold py-1 px-3 rounded";
+    const deleteButton = createIconButton({
+      iconName: "FaTrash",
+      ariaLabel: `Delete ${connection.name}`,
+      buttonClass:
+        "text-red-600 hover:text-red-700 focus:ring-red-500 hover:bg-red-50",
+      iconClass: "w-4 h-4",
+      fallbackContent: "🗑",
+    });
     deleteButton.onclick = () => {
       deleteConnection(connection.id);
     };
 
-    controls.appendChild(activateButton);
     controls.appendChild(editButton);
     controls.appendChild(deleteButton);
 
-    listItem.appendChild(nameContainer);
+    listItem.appendChild(leftGroup);
     listItem.appendChild(controls);
     list.appendChild(listItem);
   });
 }
 
+function getCollectionsStatusElement() {
+  return document.getElementById(COLLECTIONS_STATUS_ELEMENT_ID);
+}
+
+function getCollectionsListElement() {
+  return document.getElementById(COLLECTIONS_LIST_ELEMENT_ID);
+}
+
+function renderCollectionsSection(state) {
+  const statusElement = getCollectionsStatusElement();
+  const listElement = getCollectionsListElement();
+
+  if (!statusElement || !listElement) {
+    return;
+  }
+
+  const {
+    activeConnectionId,
+    collectionsStatus,
+    collectionsError,
+    activeConnectionCollections,
+    activeConnectionReadOnly,
+  } = state;
+
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === activeConnectionId)
+    : null;
+
+  listElement.innerHTML = "";
+  listElement.classList.add("hidden");
+
+  if (!activeConnection) {
+    statusElement.textContent = "Select a connection to load collections.";
+    statusElement.className = "text-sm text-gray-500";
+    return;
+  }
+
+  if (collectionsStatus === "loading") {
+    statusElement.textContent = "Loading collections...";
+    statusElement.className = "text-sm text-sky-600";
+    return;
+  }
+
+  if (collectionsStatus === "error") {
+    const message = collectionsError || "Failed to load collections.";
+    statusElement.textContent = message;
+    statusElement.className = "text-sm text-red-600";
+    return;
+  }
+
+  const accessDescriptor =
+    typeof activeConnectionReadOnly === "boolean"
+      ? activeConnectionReadOnly
+        ? "read-only"
+        : "read/write"
+      : null;
+
+  if (!Array.isArray(activeConnectionCollections) || activeConnectionCollections.length === 0) {
+    const baseMessage = `No collections found for ${activeConnection.name || "this connection"}.`;
+    statusElement.textContent = accessDescriptor
+      ? `${baseMessage} (${accessDescriptor}).`
+      : baseMessage;
+    statusElement.className = "text-sm text-gray-500";
+    return;
+  }
+
+  const intro = accessDescriptor
+    ? `Collections for ${activeConnection.name || "the active connection"} (${accessDescriptor}).`
+    : `Collections for ${activeConnection.name || "the active connection"}.`;
+  statusElement.textContent = intro;
+  statusElement.className = "text-sm text-gray-600";
+
+  activeConnectionCollections.forEach((name) => {
+    const item = document.createElement("li");
+    item.className = "rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-gray-700";
+    item.textContent = name;
+    listElement.appendChild(item);
+  });
+
+  listElement.classList.remove("hidden");
+}
+
+function normalizeCollectionsList(collections) {
+  if (!Array.isArray(collections)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const normalized = [];
+
+  collections.forEach((name) => {
+    if (typeof name !== "string") {
+      return;
+    }
+
+    const trimmed = name.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  });
+
+  return normalized.sort((a, b) => a.localeCompare(b));
+}
+
 // Render the form for editing or adding a connection
+function escapeShellDoubleQuotes(value) {
+  return value.replace(/(["\\$`])/g, "\\$1");
+}
+
+async function testConnection(uri) {
+  if (
+    !Neutralino ||
+    !Neutralino.os ||
+    typeof Neutralino.os.execCommand !== "function"
+  ) {
+    return {
+      success: false,
+      attempts: [
+        {
+          binary: "mongodb-node-driver",
+          command: "",
+          success: false,
+          error: new Error("Neutralino OS command execution is unavailable."),
+        },
+      ],
+    };
+  }
+
+  const driverLabel = "mongodb-node-driver";
+  const escapedUri = escapeShellDoubleQuotes(uri);
+  const command = `node resources/scripts/testMongoConnection.js "${escapedUri}"`;
+  const attempts = [];
+
+  try {
+    const result = await Neutralino.os.execCommand(command);
+    const success = result && Number(result.exitCode) === 0;
+    let parsedOutput = null;
+
+    if (result && result.stdOut) {
+      const trimmedOutput = String(result.stdOut).trim();
+      const lines = trimmedOutput.split(/\r?\n/).filter(Boolean);
+      for (const line of lines) {
+        try {
+          parsedOutput = JSON.parse(line);
+          break;
+        } catch (error) {
+          // Ignore lines that are not JSON
+        }
+      }
+    }
+
+    const attempt = {
+      binary: driverLabel,
+      command,
+      success,
+      exitCode: result ? result.exitCode : null,
+      stdOut: result ? result.stdOut : "",
+      stdErr: result ? result.stdErr : "",
+      parsedOutput,
+    };
+
+    attempts.push(attempt);
+
+    if (success) {
+      return { success: true, attempts };
+    }
+  } catch (error) {
+    attempts.push({
+      binary: driverLabel,
+      command,
+      success: false,
+      error,
+      exitCode: null,
+      stdOut: "",
+      stdErr: "",
+    });
+  }
+
+  if (Neutralino.debug && typeof Neutralino.debug.log === "function") {
+    attempts.forEach((attempt) => {
+      const summaryParts = [
+        `[connection-test] binary=${attempt.binary}`,
+        `command=${attempt.command}`,
+        `exitCode=${attempt.exitCode}`,
+      ];
+
+      if (attempt.stdErr) {
+        summaryParts.push(`stderr=${attempt.stdErr}`);
+      }
+
+      if (attempt.stdOut) {
+        summaryParts.push(`stdout=${attempt.stdOut}`);
+      }
+
+      if (attempt.error) {
+        summaryParts.push(`error=${attempt.error}`);
+      }
+
+      if (attempt.parsedOutput) {
+        try {
+          summaryParts.push(`parsed=${JSON.stringify(attempt.parsedOutput)}`);
+        } catch (serializationError) {
+          // Ignore serialization issues for parsed output logging.
+        }
+      }
+
+      Neutralino.debug.log(summaryParts.join(" | "));
+    });
+  }
+
+  return { success: false, attempts };
+}
+
+function summarizeFailedAttempts(attempts) {
+  if (!Array.isArray(attempts) || attempts.length === 0) {
+    return "";
+  }
+
+  return attempts
+    .map((attempt) => {
+      if (attempt.success) {
+        return "";
+      }
+
+      if (attempt.error && attempt.error.message) {
+        return `${attempt.binary}: ${attempt.error.message}`;
+      }
+
+      if (attempt.error) {
+        return `${attempt.binary}: ${attempt.error}`;
+      }
+
+      const output = (attempt.stdErr || attempt.stdOut || "").trim();
+      if (output) {
+        const compactOutput = output.split(/\r?\n/).slice(-3).join(" ");
+        return `${attempt.binary}: ${compactOutput}`;
+      }
+
+      if (typeof attempt.exitCode === "number") {
+        return `${attempt.binary}: exited with code ${attempt.exitCode}`;
+      }
+
+      return `${attempt.binary}: unknown failure`;
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
 function renderForm(formState) {
   const formContainer = document.getElementById("form-container");
   formContainer.innerHTML = "";
@@ -705,37 +1672,71 @@ function renderForm(formState) {
 
   const connection = formState.connection || { name: "", uri: "" };
 
-  formContainer.innerHTML = `
-    <div class="border border-gray-300 p-4 rounded-md">
-      <input
-        id="form-name"
-        type="text"
-        placeholder="Connection Name"
-        value="${connection.name}"
-        class="w-full mb-2 border border-gray-300 rounded-md p-2 text-sm"
-      />
-      <input
-        id="form-uri"
-        type="text"
-        placeholder="Connection String (e.g., mongodb://localhost:27017)"
-        value="${connection.uri}"
-        class="w-full mb-2 border border-gray-300 rounded-md p-2 text-sm"
-      />
-      <button id="form-test-button" class="bg-yellow-500 text-white px-4 py-2 rounded-md">
-        Test
-      </button>
-      <button id="form-save-button" class="bg-green-500 text-white px-4 py-2 rounded-md ml-2">
-        Save
-      </button>
-      <button id="form-cancel-button" class="bg-gray-500 text-white px-4 py-2 rounded-md ml-2">
-        Cancel
-      </button>
-    </div>
-  `;
+  const wrapper = document.createElement("div");
+  wrapper.className = "border border-gray-300 p-4 rounded-md space-y-3";
 
-  document.getElementById("form-save-button").onclick = () => {
-    const name = document.getElementById("form-name").value.trim();
-    const uri = document.getElementById("form-uri").value.trim();
+  const nameInput = document.createElement("input");
+  nameInput.id = "form-name";
+  nameInput.type = "text";
+  nameInput.placeholder = "Connection Name";
+  nameInput.value = connection.name;
+  nameInput.className =
+    "w-full border border-gray-300 rounded-md p-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400";
+  wrapper.appendChild(nameInput);
+
+  const uriInput = document.createElement("input");
+  uriInput.id = "form-uri";
+  uriInput.type = "text";
+  uriInput.placeholder = "Connection String (e.g., mongodb://localhost:27017)";
+  uriInput.value = connection.uri;
+  uriInput.className =
+    "w-full border border-gray-300 rounded-md p-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400";
+  wrapper.appendChild(uriInput);
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "flex items-center gap-2 pt-1";
+  wrapper.appendChild(actionsRow);
+
+  const testButton = document.createElement("button");
+  testButton.id = "form-test-button";
+  testButton.type = "button";
+  testButton.className =
+    "bg-yellow-500 text-white px-4 py-2 rounded-md hover:bg-yellow-600 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-yellow-400";
+  testButton.textContent = "Test";
+  actionsRow.appendChild(testButton);
+
+  const saveButton = createIconButton({
+    iconName: "FaCheck",
+    ariaLabel: formState.type === "edit" ? "Save changes" : "Add connection",
+    buttonClass:
+      "text-green-600 hover:text-green-700 focus:ring-green-500 border border-green-200 hover:border-green-300",
+    iconClass: "w-5 h-5",
+    fallbackContent: "✓",
+  });
+  saveButton.id = "form-save-button";
+  actionsRow.appendChild(saveButton);
+
+  const cancelButton = createIconButton({
+    iconName: "FaTimes",
+    ariaLabel: "Cancel",
+    buttonClass:
+      "text-red-600 hover:text-red-700 focus:ring-red-500 border border-red-200 hover:border-red-300",
+    iconClass: "w-5 h-5",
+    fallbackContent: "✕",
+  });
+  cancelButton.id = "form-cancel-button";
+  actionsRow.appendChild(cancelButton);
+
+  const testResultElement = document.createElement("div");
+  testResultElement.id = "form-test-result";
+  testResultElement.className = "mt-2 text-sm";
+  wrapper.appendChild(testResultElement);
+
+  formContainer.appendChild(wrapper);
+
+  saveButton.onclick = () => {
+    const name = nameInput.value.trim();
+    const uri = uriInput.value.trim();
 
     if (!name || !uri) {
       alert("Both name and connection string are required!");
@@ -749,13 +1750,307 @@ function renderForm(formState) {
     }
   };
 
-  document.getElementById("form-cancel-button").onclick = () => {
+  cancelButton.onclick = () => {
     setCurrentForm(null);
   };
 
-  document.getElementById("form-test-button").onclick = () => {
-    alert("Test functionality not implemented yet.");
+  const originalTestLabel = testButton ? testButton.textContent : "";
+
+  if (testButton) {
+    testButton.onclick = async () => {
+      const uri = uriInput ? uriInput.value.trim() : "";
+
+      if (!uri) {
+        alert("Connection string is required to test the connection.");
+        return;
+      }
+
+      if (testResultElement) {
+        testResultElement.textContent = "Testing connection...";
+        testResultElement.className = "mt-2 text-sm text-gray-600";
+      }
+
+      testButton.disabled = true;
+      testButton.textContent = "Testing...";
+
+      try {
+        const result = await testConnection(uri);
+        if (result.success) {
+          const successfulAttempt =
+            Array.isArray(result.attempts)
+              ? result.attempts.find((attempt) => attempt.success)
+              : null;
+
+          const parsedOutput = successfulAttempt ? successfulAttempt.parsedOutput : null;
+          const successMessage = parsedOutput && typeof parsedOutput.ok !== "undefined"
+            ? (() => {
+                const accessDescriptor =
+                  typeof parsedOutput.readOnly === "boolean"
+                    ? parsedOutput.readOnly
+                      ? "read-only"
+                      : "read/write"
+                    : typeof parsedOutput.accessLevel === "string"
+                    ? parsedOutput.accessLevel.trim()
+                    : "";
+
+                const suffix = accessDescriptor ? `, ${accessDescriptor}` : "";
+                return `Successfully connected (ok=${parsedOutput.ok}${suffix}).`;
+              })()
+            : "Successfully connected using the MongoDB Node.js driver.";
+
+          if (testResultElement) {
+            testResultElement.textContent = successMessage;
+            testResultElement.className = "mt-2 text-sm text-green-600";
+          } else {
+            alert(successMessage);
+          }
+        } else {
+          const failureDetails = summarizeFailedAttempts(result.attempts);
+          const failureMessage = failureDetails
+            ? `Failed to connect. ${failureDetails}`
+            : "Failed to connect.";
+
+          if (testResultElement) {
+            testResultElement.textContent = failureMessage;
+            testResultElement.className = "mt-2 text-sm text-red-600";
+          } else {
+            alert(failureMessage);
+          }
+        }
+      } catch (err) {
+        const fallbackMessage =
+          (err && err.message) || "Unable to run connection test.";
+        if (testResultElement) {
+          testResultElement.textContent = fallbackMessage;
+          testResultElement.className = "mt-2 text-sm text-red-600";
+        } else {
+          alert(fallbackMessage);
+        }
+      } finally {
+        testButton.disabled = false;
+        testButton.textContent = originalTestLabel || "Test";
+      }
+    };
+  }
+}
+
+function setupObjectIdInput() {
+  const input = getObjectIdInputElement();
+  if (input) {
+    input.addEventListener("input", (event) => {
+      setObjectIdInputValue(event.target.value || "");
+
+      if (isClipboardScanEnabled) {
+        return;
+      }
+
+      handleManualLookupRequest(objectIdInputValue, {
+        showInvalidFeedback: false,
+      }).catch((error) => {
+        console.error("Manual ObjectId lookup failed:", error);
+      });
+    });
+
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+
+      event.preventDefault();
+
+      handleManualLookupRequest(objectIdInputValue, {
+        showInvalidFeedback: true,
+      }).catch((error) => {
+        console.error("Manual ObjectId lookup failed:", error);
+      });
+    });
+  }
+
+  const toggle = getClipboardScanToggleElement();
+  if (toggle) {
+    toggle.checked = Boolean(isClipboardScanEnabled);
+    toggle.addEventListener("change", (event) => {
+      const { checked } = event.target;
+      setClipboardScanEnabled(checked);
+
+      if (!checked) {
+        handleManualLookupRequest(objectIdInputValue, {
+          showInvalidFeedback: false,
+        }).catch((error) => {
+          console.error("Manual ObjectId lookup failed:", error);
+        });
+      }
+    });
+  }
+
+  applyClipboardScanState();
+}
+
+function setupSidebarToggle() {
+  const sidebar = document.getElementById("settings-sidebar");
+  const sidebarContent = document.getElementById("sidebar-content");
+  const closeButtonContainer = document.getElementById(
+    "sidebar-close-button-container",
+  );
+  const openButtonWrapper = document.getElementById(
+    "sidebar-open-button-wrapper",
+  );
+
+  if (!sidebar) {
+    return;
+  }
+
+  let hideSidebarTimeoutId = null;
+  let hideOpenButtonTimeoutId = null;
+
+  const closeButton = closeButtonContainer
+    ? createIconButton({
+        iconName: "FaTimes",
+        ariaLabel: "Hide settings sidebar",
+        buttonClass:
+          "text-gray-500 hover:text-gray-700 hover:bg-gray-100 focus:ring-sky-500",
+        iconClass: "w-4 h-4",
+        fallbackContent: "×",
+      })
+    : null;
+
+  if (closeButton) {
+    closeButton.id = "sidebar-close-button";
+    closeButton.setAttribute("aria-controls", "settings-sidebar");
+    closeButtonContainer.appendChild(closeButton);
+  }
+
+  const openButton = openButtonWrapper
+    ? createIconButton({
+        iconName: "FaCog",
+        ariaLabel: "Show settings sidebar",
+        buttonClass:
+          "bg-white text-gray-600 shadow-md rounded-full hover:text-gray-800 hover:bg-gray-100 focus:ring-sky-500", 
+        iconClass: "w-5 h-5",
+        fallbackContent: "⚙",
+      })
+    : null;
+
+  if (openButton) {
+    openButton.id = "sidebar-open-button";
+    openButton.setAttribute("aria-controls", "settings-sidebar");
+    openButtonWrapper.appendChild(openButton);
+  }
+
+  let collapsed = false;
+  let previousCollapsed = collapsed;
+
+  const applySidebarState = () => {
+    const wasCollapsed = previousCollapsed;
+
+    if (hideSidebarTimeoutId) {
+      clearTimeout(hideSidebarTimeoutId);
+      hideSidebarTimeoutId = null;
+    }
+
+    if (hideOpenButtonTimeoutId) {
+      clearTimeout(hideOpenButtonTimeoutId);
+      hideOpenButtonTimeoutId = null;
+    }
+
+    if (collapsed) {
+      sidebar.classList.add("-translate-x-full", "pointer-events-none");
+      sidebar.classList.remove("shadow-md");
+      sidebar.classList.add("shadow-none");
+      sidebar.setAttribute("aria-hidden", "true");
+
+      if (sidebarContent) {
+        sidebarContent.classList.add("opacity-0", "pointer-events-none");
+        sidebarContent.classList.remove("opacity-100");
+      }
+
+      if (closeButton) {
+        closeButton.disabled = true;
+        closeButton.setAttribute("tabindex", "-1");
+      }
+
+      if (openButtonWrapper) {
+        openButtonWrapper.classList.remove("hidden");
+        requestAnimationFrame(() => {
+          openButtonWrapper.classList.remove("opacity-0", "pointer-events-none");
+          openButtonWrapper.classList.add("opacity-100");
+        });
+      }
+
+      if (openButton) {
+        openButton.setAttribute("aria-expanded", "false");
+      }
+
+      hideSidebarTimeoutId = setTimeout(() => {
+        if (collapsed) {
+          sidebar.classList.add("hidden");
+        }
+      }, SIDEBAR_TRANSITION_DURATION_MS);
+    } else {
+      sidebar.classList.remove("hidden", "pointer-events-none", "shadow-none");
+      sidebar.classList.add("shadow-md");
+      requestAnimationFrame(() => {
+        sidebar.classList.remove("-translate-x-full");
+      });
+      sidebar.setAttribute("aria-hidden", "false");
+
+      if (sidebarContent) {
+        sidebarContent.classList.remove("opacity-0", "pointer-events-none");
+        sidebarContent.classList.add("opacity-100");
+      }
+
+      if (closeButton) {
+        closeButton.disabled = false;
+        closeButton.removeAttribute("tabindex");
+        if (wasCollapsed) {
+          closeButton.focus();
+        }
+      }
+
+      if (openButtonWrapper) {
+        openButtonWrapper.classList.remove("opacity-100");
+        openButtonWrapper.classList.add("opacity-0", "pointer-events-none");
+        hideOpenButtonTimeoutId = setTimeout(() => {
+          if (!collapsed) {
+            openButtonWrapper.classList.add("hidden");
+          }
+        }, 200);
+      }
+
+      if (openButton) {
+        openButton.setAttribute("aria-expanded", "true");
+      }
+    }
+
+    previousCollapsed = collapsed;
   };
+
+  applySidebarState();
+
+  if (closeButton) {
+    closeButton.addEventListener("click", () => {
+      if (collapsed) {
+        return;
+      }
+      collapsed = true;
+      applySidebarState();
+      if (openButton) {
+        setTimeout(() => {
+          openButton.focus();
+        }, SIDEBAR_TRANSITION_DURATION_MS);
+      }
+    });
+  }
+
+  if (openButton) {
+    openButton.addEventListener("click", () => {
+      if (!collapsed) {
+        return;
+      }
+      collapsed = false;
+      applySidebarState();
+    });
+  }
 }
 
 // Set up event listener for "Add New" button
@@ -767,7 +2062,54 @@ document.getElementById("add-new-button").addEventListener("click", () => {
 store.subscribe((state) => {
   renderConnections(state.connections, state.activeConnectionId);
   renderForm(state.currentForm);
-  saveConnections(); // Automatically save on any state change
+  renderCollectionsSection(state);
+
+  if (state.connections !== lastConnectionsSnapshot) {
+    lastConnectionsSnapshot = state.connections;
+    saveConnections();
+  }
+
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === state.activeConnectionId)
+    : null;
+  const activeSignature = activeConnection
+    ? `${activeConnection.id}:${activeConnection.uri || ""}`
+    : null;
+
+  if (activeSignature !== lastActiveConnectionSignature) {
+    lastActiveConnectionSignature = activeSignature;
+
+    loadCollectionsForActiveConnection().catch((error) => {
+      console.error("Failed to load collections for the active connection:", error);
+    });
+  }
+
+  if (state.activeConnectionId !== lastActiveConnectionId) {
+    lastActiveConnectionId = state.activeConnectionId;
+    if (CLIPBOARD_MONITORING_ENABLED && isClipboardScanEnabled) {
+      if (typeof lastClipboardContent === "string" && lastClipboardContent) {
+        processClipboardContent(lastClipboardContent).catch((error) => {
+          console.error(
+            "Failed to refresh clipboard lookup after connection change:",
+            error
+          );
+        });
+      } else {
+        renderClipboardIdleState();
+      }
+    } else if (objectIdInputValue && objectIdInputValue.trim()) {
+      handleManualLookupRequest(objectIdInputValue, {
+        showInvalidFeedback: false,
+      }).catch((error) => {
+        console.error(
+          "Failed to refresh manual lookup after connection change:",
+          error
+        );
+      });
+    } else {
+      renderClipboardIdleState();
+    }
+  }
 });
 
 // Initialize the app
@@ -775,7 +2117,19 @@ async function init() {
   await loadConnections(); // Load connections from file
   const { connections, activeConnectionId } = store.getState();
   renderConnections(connections, activeConnectionId); // Initial render
+  renderClipboardIdleState();
+
   if (CLIPBOARD_MONITORING_ENABLED) {
+    if (isClipboardScanEnabled) {
+      try {
+        const initialClipboard = await Neutralino.clipboard.readText();
+        lastClipboardContent = initialClipboard;
+        await processClipboardContent(initialClipboard);
+      } catch (clipboardError) {
+        console.warn("Unable to read initial clipboard contents:", clipboardError);
+      }
+    }
+
     setInterval(getClipboardContent, 1000);
   }
 }
@@ -796,5 +2150,7 @@ document.addEventListener(MENU_EVENT_NAME, (event) => {
   });
 });
 
+setupObjectIdInput();
+setupSidebarToggle();
 registerEditingShortcuts();
 init();

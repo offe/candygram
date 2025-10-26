@@ -81,7 +81,12 @@
    npm install -g @neutralinojs/neu
    ```
 
-3. Run the app:
+3. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+4. Run the app:
    ```bash
    neu run
    ```
