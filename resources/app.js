@@ -39,6 +39,8 @@ const CLIPBOARD_STATUS_TONES = {
   warning: "text-yellow-600",
 };
 
+const SIDEBAR_TRANSITION_DURATION_MS = 300;
+
 // React icon loading utilities
 const REACT_ICON_SOURCES = {
   react: "https://esm.sh/react@18.2.0",
@@ -1449,18 +1451,74 @@ function renderForm(formState) {
 function setupSidebarToggle() {
   const sidebar = document.getElementById("settings-sidebar");
   const sidebarContent = document.getElementById("sidebar-content");
-  const toggleButton = document.getElementById("sidebar-toggle");
+  const closeButtonContainer = document.getElementById(
+    "sidebar-close-button-container",
+  );
+  const openButtonWrapper = document.getElementById(
+    "sidebar-open-button-wrapper",
+  );
 
-  if (!sidebar || !toggleButton) {
+  if (!sidebar) {
     return;
   }
 
+  let hideSidebarTimeoutId = null;
+  let hideOpenButtonTimeoutId = null;
+
+  const closeButton = closeButtonContainer
+    ? createIconButton({
+        iconName: "FaTimes",
+        ariaLabel: "Hide settings sidebar",
+        buttonClass:
+          "text-gray-500 hover:text-gray-700 hover:bg-gray-100 focus:ring-sky-500",
+        iconClass: "w-4 h-4",
+        fallbackContent: "×",
+      })
+    : null;
+
+  if (closeButton) {
+    closeButton.id = "sidebar-close-button";
+    closeButton.setAttribute("aria-controls", "settings-sidebar");
+    closeButtonContainer.appendChild(closeButton);
+  }
+
+  const openButton = openButtonWrapper
+    ? createIconButton({
+        iconName: "FaCog",
+        ariaLabel: "Show settings sidebar",
+        buttonClass:
+          "bg-white text-gray-600 shadow-md rounded-full hover:text-gray-800 hover:bg-gray-100 focus:ring-sky-500", 
+        iconClass: "w-5 h-5",
+        fallbackContent: "⚙",
+      })
+    : null;
+
+  if (openButton) {
+    openButton.id = "sidebar-open-button";
+    openButton.setAttribute("aria-controls", "settings-sidebar");
+    openButtonWrapper.appendChild(openButton);
+  }
+
   let collapsed = false;
+  let previousCollapsed = collapsed;
 
   const applySidebarState = () => {
+    const wasCollapsed = previousCollapsed;
+
+    if (hideSidebarTimeoutId) {
+      clearTimeout(hideSidebarTimeoutId);
+      hideSidebarTimeoutId = null;
+    }
+
+    if (hideOpenButtonTimeoutId) {
+      clearTimeout(hideOpenButtonTimeoutId);
+      hideOpenButtonTimeoutId = null;
+    }
+
     if (collapsed) {
-      sidebar.classList.add("w-0", "border-r-0", "shadow-none");
-      sidebar.classList.remove("w-72", "border-r", "shadow-md");
+      sidebar.classList.add("-translate-x-full", "pointer-events-none");
+      sidebar.classList.remove("shadow-md");
+      sidebar.classList.add("shadow-none");
       sidebar.setAttribute("aria-hidden", "true");
 
       if (sidebarContent) {
@@ -1468,12 +1526,34 @@ function setupSidebarToggle() {
         sidebarContent.classList.remove("opacity-100");
       }
 
-      toggleButton.textContent = "Show Settings";
-      toggleButton.setAttribute("aria-expanded", "false");
-      toggleButton.setAttribute("aria-label", "Expand settings sidebar");
+      if (closeButton) {
+        closeButton.disabled = true;
+        closeButton.setAttribute("tabindex", "-1");
+      }
+
+      if (openButtonWrapper) {
+        openButtonWrapper.classList.remove("hidden");
+        requestAnimationFrame(() => {
+          openButtonWrapper.classList.remove("opacity-0", "pointer-events-none");
+          openButtonWrapper.classList.add("opacity-100");
+        });
+      }
+
+      if (openButton) {
+        openButton.setAttribute("aria-expanded", "false");
+      }
+
+      hideSidebarTimeoutId = setTimeout(() => {
+        if (collapsed) {
+          sidebar.classList.add("hidden");
+        }
+      }, SIDEBAR_TRANSITION_DURATION_MS);
     } else {
-      sidebar.classList.add("w-72", "border-r", "shadow-md");
-      sidebar.classList.remove("w-0", "border-r-0", "shadow-none");
+      sidebar.classList.remove("hidden", "pointer-events-none", "shadow-none");
+      sidebar.classList.add("shadow-md");
+      requestAnimationFrame(() => {
+        sidebar.classList.remove("-translate-x-full");
+      });
       sidebar.setAttribute("aria-hidden", "false");
 
       if (sidebarContent) {
@@ -1481,18 +1561,58 @@ function setupSidebarToggle() {
         sidebarContent.classList.add("opacity-100");
       }
 
-      toggleButton.textContent = "Hide Settings";
-      toggleButton.setAttribute("aria-expanded", "true");
-      toggleButton.setAttribute("aria-label", "Collapse settings sidebar");
+      if (closeButton) {
+        closeButton.disabled = false;
+        closeButton.removeAttribute("tabindex");
+        if (wasCollapsed) {
+          closeButton.focus();
+        }
+      }
+
+      if (openButtonWrapper) {
+        openButtonWrapper.classList.remove("opacity-100");
+        openButtonWrapper.classList.add("opacity-0", "pointer-events-none");
+        hideOpenButtonTimeoutId = setTimeout(() => {
+          if (!collapsed) {
+            openButtonWrapper.classList.add("hidden");
+          }
+        }, 200);
+      }
+
+      if (openButton) {
+        openButton.setAttribute("aria-expanded", "true");
+      }
     }
+
+    previousCollapsed = collapsed;
   };
 
   applySidebarState();
 
-  toggleButton.addEventListener("click", () => {
-    collapsed = !collapsed;
-    applySidebarState();
-  });
+  if (closeButton) {
+    closeButton.addEventListener("click", () => {
+      if (collapsed) {
+        return;
+      }
+      collapsed = true;
+      applySidebarState();
+      if (openButton) {
+        setTimeout(() => {
+          openButton.focus();
+        }, SIDEBAR_TRANSITION_DURATION_MS);
+      }
+    });
+  }
+
+  if (openButton) {
+    openButton.addEventListener("click", () => {
+      if (!collapsed) {
+        return;
+      }
+      collapsed = false;
+      applySidebarState();
+    });
+  }
 }
 
 // Set up event listener for "Add New" button
