@@ -1,7 +1,7 @@
 // app.js
 
 // Clipboard monitoring
-const CLIPBOARD_MONITORING_ENABLED = false;
+const CLIPBOARD_MONITORING_ENABLED = true;
 const isMacPlatform = typeof NL_OS !== "undefined" && NL_OS === "Darwin";
 const unsupportedInputTypes = new Set([
   "button",
@@ -20,6 +20,15 @@ const unsupportedInputTypes = new Set([
   "week",
   "hidden",
 ]);
+
+const MENU_EVENT_NAME = "candygram:menu-action";
+const MENU_ACTION_MAP = {
+  "menu:candygram:quit": "quit",
+  "menu:edit:cut": "cut",
+  "menu:edit:copy": "copy",
+  "menu:edit:paste": "paste",
+  "menu:edit:selectAll": "selectAll",
+};
 
 function isEditableElement(element) {
   if (!element || element.readOnly || element.disabled) {
@@ -153,6 +162,34 @@ async function handlePaste(event, activeElement) {
   return true;
 }
 
+function performEditingCommand(command, event) {
+  const fallbackEvent = { preventDefault() {} };
+  const normalizedEvent = event ?? fallbackEvent;
+
+  if (typeof normalizedEvent.preventDefault !== "function") {
+    normalizedEvent.preventDefault = fallbackEvent.preventDefault;
+  }
+
+  const activeElement = document.activeElement;
+
+  switch (command) {
+    case "quit":
+      normalizedEvent.preventDefault();
+      Neutralino.app.exit();
+      return Promise.resolve(true);
+    case "selectAll":
+      return Promise.resolve(handleSelectAll(normalizedEvent, activeElement));
+    case "copy":
+      return handleCopyOrCut(normalizedEvent, activeElement, "copy");
+    case "cut":
+      return handleCopyOrCut(normalizedEvent, activeElement, "cut");
+    case "paste":
+      return handlePaste(normalizedEvent, activeElement);
+    default:
+      return Promise.resolve(false);
+  }
+}
+
 function registerEditingShortcuts() {
   document.addEventListener("keydown", (event) => {
     const modifierActive = isMacPlatform ? event.metaKey : event.ctrlKey;
@@ -161,35 +198,36 @@ function registerEditingShortcuts() {
     }
 
     const key = event.key.toLowerCase();
-    const activeElement = document.activeElement;
-
     if (key === "q" && (isMacPlatform || event.ctrlKey)) {
-      event.preventDefault();
-      Neutralino.app.exit();
+      performEditingCommand("quit", event).catch((err) => {
+        console.error("Quit shortcut failed:", err);
+      });
       return;
     }
 
     if (key === "a") {
-      handleSelectAll(event, activeElement);
+      performEditingCommand("selectAll", event).catch((err) => {
+        console.error("Select All shortcut failed:", err);
+      });
       return;
     }
 
     if (key === "c") {
-      handleCopyOrCut(event, activeElement, "copy").catch((err) => {
+      performEditingCommand("copy", event).catch((err) => {
         console.error("Copy shortcut failed:", err);
       });
       return;
     }
 
     if (key === "x") {
-      handleCopyOrCut(event, activeElement, "cut").catch((err) => {
+      performEditingCommand("cut", event).catch((err) => {
         console.error("Cut shortcut failed:", err);
       });
       return;
     }
 
     if (key === "v") {
-      handlePaste(event, activeElement).catch((err) => {
+      performEditingCommand("paste", event).catch((err) => {
         console.error("Paste shortcut failed:", err);
       });
       return;
@@ -635,6 +673,19 @@ async function init() {
     setInterval(getClipboardContent, 1000);
   }
 }
+
+document.addEventListener(MENU_EVENT_NAME, (event) => {
+  const actionId = event?.detail?.id;
+  const command = MENU_ACTION_MAP[actionId];
+
+  if (!command) {
+    return;
+  }
+
+  performEditingCommand(command).catch((err) => {
+    console.error(`Menu command "${command}" failed:`, err);
+  });
+});
 
 registerEditingShortcuts();
 init();
