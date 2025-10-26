@@ -39,6 +39,141 @@ const CLIPBOARD_STATUS_TONES = {
   warning: "text-yellow-600",
 };
 
+// React icon loading utilities
+const REACT_ICON_SOURCES = {
+  react: "https://esm.sh/react@18.2.0",
+  reactDomServer: "https://esm.sh/react-dom@18.2.0/server?deps=react@18.2.0",
+  reactIconsFa: "https://esm.sh/react-icons@4.12.0/fa?deps=react@18.2.0",
+};
+
+const ReactIconLoader = (() => {
+  let loadPromise = null;
+
+  async function loadModules() {
+    if (!loadPromise) {
+      loadPromise = Promise.all([
+        import(REACT_ICON_SOURCES.react),
+        import(REACT_ICON_SOURCES.reactDomServer),
+        import(REACT_ICON_SOURCES.reactIconsFa),
+      ])
+        .then(([reactModule, reactDomServerModule, iconModule]) => {
+          const ReactExport = reactModule.default || reactModule;
+          if (!ReactExport || typeof ReactExport.createElement !== "function") {
+            throw new Error("React.createElement is unavailable.");
+          }
+
+          const renderToStaticMarkup =
+            reactDomServerModule.renderToStaticMarkup ||
+            (reactDomServerModule.default
+              ? reactDomServerModule.default.renderToStaticMarkup
+              : null);
+
+          if (typeof renderToStaticMarkup !== "function") {
+            throw new Error(
+              "ReactDOMServer.renderToStaticMarkup is unavailable.",
+            );
+          }
+
+          return {
+            React: ReactExport,
+            renderToStaticMarkup,
+            icons: iconModule,
+          };
+        })
+        .catch((error) => {
+          console.error("Failed to load react-icons bundle:", error);
+          loadPromise = null;
+          throw error;
+        });
+    }
+
+    return loadPromise;
+  }
+
+  return {
+    async renderIcon(targetElement, iconName, { className, title } = {}) {
+      if (!targetElement) {
+        return;
+      }
+
+      try {
+        const { React, renderToStaticMarkup, icons } = await loadModules();
+        const IconComponent = icons[iconName];
+
+        if (typeof IconComponent !== "function") {
+          console.warn(`Icon "${iconName}" could not be found in react-icons/fa.`);
+          return;
+        }
+
+        const props = {
+          focusable: "false",
+          "aria-hidden": "true",
+        };
+
+        if (className) {
+          props.className = className;
+        }
+
+        if (title) {
+          props.title = title;
+        }
+
+        const markup = renderToStaticMarkup(
+          React.createElement(IconComponent, props),
+        );
+
+        targetElement.innerHTML = markup;
+      } catch (error) {
+        console.error(`Failed to render icon "${iconName}":`, error);
+      }
+    },
+  };
+})();
+
+const ICON_BUTTON_BASE_CLASSES =
+  "inline-flex h-8 w-8 items-center justify-center rounded-md border border-transparent p-1 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1";
+
+function createIconButton({
+  iconName,
+  ariaLabel,
+  buttonClass = "",
+  iconClass = "w-4 h-4",
+  title,
+  fallbackContent = "",
+}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `${ICON_BUTTON_BASE_CLASSES} ${buttonClass}`.trim();
+
+  if (ariaLabel) {
+    button.setAttribute("aria-label", ariaLabel);
+  }
+
+  if (title || ariaLabel) {
+    button.title = title || ariaLabel;
+  }
+
+  const srOnly = document.createElement("span");
+  srOnly.className = "sr-only";
+  srOnly.textContent = ariaLabel || title || "";
+  button.appendChild(srOnly);
+
+  const iconContainer = document.createElement("span");
+  iconContainer.className = "flex items-center justify-center";
+  iconContainer.setAttribute("aria-hidden", "true");
+  if (fallbackContent) {
+    iconContainer.textContent = fallbackContent;
+  }
+  button.appendChild(iconContainer);
+
+  ReactIconLoader.renderIcon(iconContainer, iconName, {
+    className: iconClass,
+    title: title || ariaLabel,
+  });
+
+  return button;
+}
+
 function isEditableElement(element) {
   if (!element || element.readOnly || element.disabled) {
     return false;
@@ -975,18 +1110,26 @@ function renderConnections(connections, activeConnectionId) {
       setActiveConnection(connection.id);
     };
 
-    const editButton = document.createElement("button");
-    editButton.textContent = "Edit";
-    editButton.className =
-      "ml-2 bg-green-600 hover:bg-green-700 text-black font-bold py-1 px-3 rounded";
+    const editButton = createIconButton({
+      iconName: "FaEdit",
+      ariaLabel: `Edit ${connection.name}`,
+      buttonClass:
+        "ml-2 text-sky-600 hover:text-sky-700 focus:ring-sky-500 hover:bg-sky-50",
+      iconClass: "w-4 h-4",
+      fallbackContent: "✎",
+    });
     editButton.onclick = () => {
       setCurrentForm({ type: "edit", connection });
     };
 
-    const deleteButton = document.createElement("button");
-    deleteButton.textContent = "Delete";
-    deleteButton.className =
-      "ml-2 bg-red-600 hover:bg-red-700 text-black font-bold py-1 px-3 rounded";
+    const deleteButton = createIconButton({
+      iconName: "FaTrash",
+      ariaLabel: `Delete ${connection.name}`,
+      buttonClass:
+        "ml-2 text-red-600 hover:text-red-700 focus:ring-red-500 hover:bg-red-50",
+      iconClass: "w-4 h-4",
+      fallbackContent: "🗑",
+    });
     deleteButton.onclick = () => {
       deleteConnection(connection.id);
     };
@@ -1153,38 +1296,71 @@ function renderForm(formState) {
 
   const connection = formState.connection || { name: "", uri: "" };
 
-  formContainer.innerHTML = `
-    <div class="border border-gray-300 p-4 rounded-md">
-      <input
-        id="form-name"
-        type="text"
-        placeholder="Connection Name"
-        value="${connection.name}"
-        class="w-full mb-2 border border-gray-300 rounded-md p-2 text-sm"
-      />
-      <input
-        id="form-uri"
-        type="text"
-        placeholder="Connection String (e.g., mongodb://localhost:27017)"
-        value="${connection.uri}"
-        class="w-full mb-2 border border-gray-300 rounded-md p-2 text-sm"
-      />
-      <button id="form-test-button" class="bg-yellow-500 text-white px-4 py-2 rounded-md">
-        Test
-      </button>
-      <button id="form-save-button" class="bg-green-500 text-white px-4 py-2 rounded-md ml-2">
-        Save
-      </button>
-      <button id="form-cancel-button" class="bg-gray-500 text-white px-4 py-2 rounded-md ml-2">
-        Cancel
-      </button>
-      <div id="form-test-result" class="mt-2 text-sm"></div>
-    </div>
-  `;
+  const wrapper = document.createElement("div");
+  wrapper.className = "border border-gray-300 p-4 rounded-md space-y-3";
 
-  document.getElementById("form-save-button").onclick = () => {
-    const name = document.getElementById("form-name").value.trim();
-    const uri = document.getElementById("form-uri").value.trim();
+  const nameInput = document.createElement("input");
+  nameInput.id = "form-name";
+  nameInput.type = "text";
+  nameInput.placeholder = "Connection Name";
+  nameInput.value = connection.name;
+  nameInput.className =
+    "w-full border border-gray-300 rounded-md p-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400";
+  wrapper.appendChild(nameInput);
+
+  const uriInput = document.createElement("input");
+  uriInput.id = "form-uri";
+  uriInput.type = "text";
+  uriInput.placeholder = "Connection String (e.g., mongodb://localhost:27017)";
+  uriInput.value = connection.uri;
+  uriInput.className =
+    "w-full border border-gray-300 rounded-md p-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400";
+  wrapper.appendChild(uriInput);
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "flex items-center gap-2 pt-1";
+  wrapper.appendChild(actionsRow);
+
+  const testButton = document.createElement("button");
+  testButton.id = "form-test-button";
+  testButton.type = "button";
+  testButton.className =
+    "bg-yellow-500 text-white px-4 py-2 rounded-md hover:bg-yellow-600 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-yellow-400";
+  testButton.textContent = "Test";
+  actionsRow.appendChild(testButton);
+
+  const saveButton = createIconButton({
+    iconName: "FaCheck",
+    ariaLabel: formState.type === "edit" ? "Save changes" : "Add connection",
+    buttonClass:
+      "text-green-600 hover:text-green-700 focus:ring-green-500 border border-green-200 hover:border-green-300",
+    iconClass: "w-5 h-5",
+    fallbackContent: "✓",
+  });
+  saveButton.id = "form-save-button";
+  actionsRow.appendChild(saveButton);
+
+  const cancelButton = createIconButton({
+    iconName: "FaTimes",
+    ariaLabel: "Cancel",
+    buttonClass:
+      "text-red-600 hover:text-red-700 focus:ring-red-500 border border-red-200 hover:border-red-300",
+    iconClass: "w-5 h-5",
+    fallbackContent: "✕",
+  });
+  cancelButton.id = "form-cancel-button";
+  actionsRow.appendChild(cancelButton);
+
+  const testResultElement = document.createElement("div");
+  testResultElement.id = "form-test-result";
+  testResultElement.className = "mt-2 text-sm";
+  wrapper.appendChild(testResultElement);
+
+  formContainer.appendChild(wrapper);
+
+  saveButton.onclick = () => {
+    const name = nameInput.value.trim();
+    const uri = uriInput.value.trim();
 
     if (!name || !uri) {
       alert("Both name and connection string are required!");
@@ -1198,17 +1374,14 @@ function renderForm(formState) {
     }
   };
 
-  document.getElementById("form-cancel-button").onclick = () => {
+  cancelButton.onclick = () => {
     setCurrentForm(null);
   };
 
-  const testButton = document.getElementById("form-test-button");
-  const testResultElement = document.getElementById("form-test-result");
   const originalTestLabel = testButton ? testButton.textContent : "";
 
   if (testButton) {
     testButton.onclick = async () => {
-      const uriInput = document.getElementById("form-uri");
       const uri = uriInput ? uriInput.value.trim() : "";
 
       if (!uri) {
