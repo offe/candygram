@@ -697,6 +697,172 @@ function renderConnections(connections, activeConnectionId) {
 }
 
 // Render the form for editing or adding a connection
+function escapeShellDoubleQuotes(value) {
+  return value.replace(/(["\\$`])/g, "\\$1");
+}
+
+function parseMongoPingOutput(output) {
+  if (!output) {
+    return false;
+  }
+
+  const trimmedOutput = String(output).trim();
+  if (!trimmedOutput) {
+    return false;
+  }
+
+  const lines = trimmedOutput
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed.ok !== "undefined" && Number(parsed.ok) === 1) {
+        return true;
+      }
+    } catch (parseError) {
+      // Ignore JSON parse errors for non-JSON lines
+    }
+  }
+
+  if (/"ok"\s*[:=]\s*(1(?:\.0)?)/.test(trimmedOutput)) {
+    return true;
+  }
+
+  return false;
+}
+
+async function runMongoPing(binary, uri) {
+  const escapedUri = escapeShellDoubleQuotes(uri);
+  const evalExpression =
+    binary === "mongosh"
+      ? "JSON.stringify(await db.runCommand({ ping: 1 }))"
+      : "JSON.stringify(db.runCommand({ ping: 1 }))";
+  const command = `${binary} "${escapedUri}" --quiet --eval "${evalExpression}"`;
+
+  try {
+    const result = await Neutralino.os.execCommand(command);
+    const success =
+      result &&
+      Number(result.exitCode) === 0 &&
+      parseMongoPingOutput(result.stdOut);
+
+    return {
+      binary,
+      command,
+      success,
+      exitCode: result ? result.exitCode : null,
+      stdOut: result ? result.stdOut : "",
+      stdErr: result ? result.stdErr : "",
+    };
+  } catch (error) {
+    return {
+      binary,
+      command,
+      success: false,
+      error,
+      exitCode: null,
+      stdOut: "",
+      stdErr: "",
+    };
+  }
+}
+
+async function testConnection(uri) {
+  if (
+    !Neutralino ||
+    !Neutralino.os ||
+    typeof Neutralino.os.execCommand !== "function"
+  ) {
+    return {
+      success: false,
+      attempts: [
+        {
+          binary: "client",
+          command: "",
+          success: false,
+          error: new Error("Neutralino OS command execution is unavailable."),
+        },
+      ],
+    };
+  }
+
+  const binaries = ["mongosh", "mongo"];
+  const attempts = [];
+
+  for (const binary of binaries) {
+    const attempt = await runMongoPing(binary, uri);
+    attempts.push(attempt);
+
+    if (attempt.success) {
+      return { success: true, attempts };
+    }
+  }
+
+  if (Neutralino.debug && typeof Neutralino.debug.log === "function") {
+    attempts.forEach((attempt) => {
+      const summaryParts = [
+        `[connection-test] binary=${attempt.binary}`,
+        `command=${attempt.command}`,
+        `exitCode=${attempt.exitCode}`,
+      ];
+
+      if (attempt.stdErr) {
+        summaryParts.push(`stderr=${attempt.stdErr}`);
+      }
+
+      if (attempt.stdOut) {
+        summaryParts.push(`stdout=${attempt.stdOut}`);
+      }
+
+      if (attempt.error) {
+        summaryParts.push(`error=${attempt.error}`);
+      }
+
+      Neutralino.debug.log(summaryParts.join(" | "));
+    });
+  }
+
+  return { success: false, attempts };
+}
+
+function summarizeFailedAttempts(attempts) {
+  if (!Array.isArray(attempts) || attempts.length === 0) {
+    return "";
+  }
+
+  return attempts
+    .map((attempt) => {
+      if (attempt.success) {
+        return "";
+      }
+
+      if (attempt.error && attempt.error.message) {
+        return `${attempt.binary}: ${attempt.error.message}`;
+      }
+
+      if (attempt.error) {
+        return `${attempt.binary}: ${attempt.error}`;
+      }
+
+      const output = (attempt.stdErr || attempt.stdOut || "").trim();
+      if (output) {
+        const compactOutput = output.split(/\r?\n/).slice(-3).join(" ");
+        return `${attempt.binary}: ${compactOutput}`;
+      }
+
+      if (typeof attempt.exitCode === "number") {
+        return `${attempt.binary}: exited with code ${attempt.exitCode}`;
+      }
+
+      return `${attempt.binary}: unknown failure`;
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
 function renderForm(formState) {
   const formContainer = document.getElementById("form-container");
   formContainer.innerHTML = "";
@@ -730,6 +896,7 @@ function renderForm(formState) {
       <button id="form-cancel-button" class="bg-gray-500 text-white px-4 py-2 rounded-md ml-2">
         Cancel
       </button>
+      <div id="form-test-result" class="mt-2 text-sm"></div>
     </div>
   `;
 
@@ -753,9 +920,73 @@ function renderForm(formState) {
     setCurrentForm(null);
   };
 
-  document.getElementById("form-test-button").onclick = () => {
-    alert("Test functionality not implemented yet.");
-  };
+  const testButton = document.getElementById("form-test-button");
+  const testResultElement = document.getElementById("form-test-result");
+  const originalTestLabel = testButton ? testButton.textContent : "";
+
+  if (testButton) {
+    testButton.onclick = async () => {
+      const uriInput = document.getElementById("form-uri");
+      const uri = uriInput ? uriInput.value.trim() : "";
+
+      if (!uri) {
+        alert("Connection string is required to test the connection.");
+        return;
+      }
+
+      if (testResultElement) {
+        testResultElement.textContent = "Testing connection...";
+        testResultElement.className = "mt-2 text-sm text-gray-600";
+      }
+
+      testButton.disabled = true;
+      testButton.textContent = "Testing...";
+
+      try {
+        const result = await testConnection(uri);
+        if (result.success) {
+          const successfulAttempt =
+            Array.isArray(result.attempts)
+              ? result.attempts.find((attempt) => attempt.success)
+              : null;
+
+          if (testResultElement) {
+            const binaryName = successfulAttempt
+              ? successfulAttempt.binary
+              : "client";
+            testResultElement.textContent = `Successfully connected using ${binaryName}.`;
+            testResultElement.className = "mt-2 text-sm text-green-600";
+          } else {
+            alert("Connection successful.");
+          }
+        } else {
+          const failureDetails = summarizeFailedAttempts(result.attempts);
+          const failureMessage = failureDetails
+            ? `Failed to connect. ${failureDetails}`
+            : "Failed to connect.";
+
+          if (testResultElement) {
+            testResultElement.textContent = failureMessage;
+            testResultElement.className = "mt-2 text-sm text-red-600";
+          } else {
+            alert(failureMessage);
+          }
+        }
+      } catch (err) {
+        const fallbackMessage =
+          (err && err.message) || "Unable to run connection test.";
+        if (testResultElement) {
+          testResultElement.textContent = fallbackMessage;
+          testResultElement.className = "mt-2 text-sm text-red-600";
+        } else {
+          alert(fallbackMessage);
+        }
+      } finally {
+        testButton.disabled = false;
+        testButton.textContent = originalTestLabel || "Test";
+      }
+    };
+  }
 }
 
 // Set up event listener for "Add New" button
