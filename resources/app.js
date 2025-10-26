@@ -598,10 +598,7 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
     }
 
     if (lookupResult.status === "found") {
-      updateClipboardMessage(
-        `Found ${lookupResult.matches.length} document(s) matching ObjectId(${objectId}).`,
-        "success",
-      );
+      updateClipboardMessage("Document lookup complete.", "success");
       renderClipboardMatches(lookupResult.matches);
       return;
     }
@@ -610,7 +607,7 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       lookupResult.status === "not_found" ||
       lookupResult.status === "no_collections"
     ) {
-      updateClipboardMessage(`ObjectId(${objectId}) Object not found.`, "error");
+      updateClipboardMessage(`${objectId} Object not found.`, "error");
       clearClipboardOutput();
       return;
     }
@@ -1582,10 +1579,6 @@ function setupObjectIdInput() {
       }
 
       event.preventDefault();
-
-      if (isClipboardScanEnabled) {
-        return;
-      }
 
       handleManualLookupRequest(objectIdInputValue, {
         showInvalidFeedback: true,
