@@ -164,7 +164,7 @@ async function handlePaste(event, activeElement) {
 
 function performEditingCommand(command, event) {
   const fallbackEvent = { preventDefault() {} };
-  const normalizedEvent = event ?? fallbackEvent;
+  const normalizedEvent = event != null ? event : fallbackEvent;
 
   if (typeof normalizedEvent.preventDefault !== "function") {
     normalizedEvent.preventDefault = fallbackEvent.preventDefault;
@@ -473,7 +473,8 @@ async function loadConnections() {
           };
 
           if (normalized.isActive && activeConnectionId === null) {
-            activeConnectionId = normalized.id ?? null;
+            activeConnectionId =
+              typeof normalized.id !== "undefined" ? normalized.id : null;
           }
 
           return normalized;
@@ -530,9 +531,14 @@ async function loadConnections() {
       (conn) => conn.isActive
     );
 
+    let normalizedActiveId = null;
+    if (activeFromConnections && typeof activeFromConnections.id !== "undefined") {
+      normalizedActiveId = activeFromConnections.id;
+    }
+
     store.setState({
       connections: normalizedConnections,
-      activeConnectionId: activeFromConnections?.id ?? null,
+      activeConnectionId: normalizedActiveId,
     });
   } catch (fallbackError) {
     console.warn("Failed to load packaged sample connections:", fallbackError);
