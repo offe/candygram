@@ -1,10 +1,14 @@
 // app.js
 
 // Clipboard monitoring
+const CLIPBOARD_MONITORING_ENABLED = false;
 let lastClipboardContent = "";
 
 // Function to monitor clipboard content
 async function getClipboardContent() {
+  if (!CLIPBOARD_MONITORING_ENABLED) {
+    return;
+  }
   const { activeConnectionId } = store.getState();
   if (!activeConnectionId) {
     console.warn("No active connection selected. Clipboard monitoring paused.");
@@ -445,7 +449,9 @@ async function init() {
   await loadConnections(); // Load connections from file
   const { connections, activeConnectionId } = store.getState();
   renderConnections(connections, activeConnectionId); // Initial render
-  setInterval(getClipboardContent, 1000);
+  if (CLIPBOARD_MONITORING_ENABLED) {
+    setInterval(getClipboardContent, 1000);
+  }
 }
 
 init();
