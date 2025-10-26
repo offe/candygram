@@ -1,10 +1,255 @@
 // app.js
 
 // Clipboard monitoring
+const CLIPBOARD_MONITORING_ENABLED = true;
+const isMacPlatform = typeof NL_OS !== "undefined" && NL_OS === "Darwin";
+const unsupportedInputTypes = new Set([
+  "button",
+  "submit",
+  "reset",
+  "radio",
+  "checkbox",
+  "file",
+  "color",
+  "image",
+  "range",
+  "date",
+  "datetime-local",
+  "month",
+  "time",
+  "week",
+  "hidden",
+]);
+
+const MENU_EVENT_NAME = "candygram:menu-action";
+const MENU_ACTION_MAP = {
+  "menu:candygram:quit": "quit",
+  "menu:edit:cut": "cut",
+  "menu:edit:copy": "copy",
+  "menu:edit:paste": "paste",
+  "menu:edit:selectAll": "selectAll",
+};
+
+function isEditableElement(element) {
+  if (!element || element.readOnly || element.disabled) {
+    return false;
+  }
+
+  if (element.tagName === "INPUT") {
+    return !unsupportedInputTypes.has(element.type);
+  }
+
+  return (
+    element.tagName === "TEXTAREA" ||
+    element.isContentEditable === true ||
+    element.contentEditable === "true" ||
+    element.contentEditable === "plaintext-only" ||
+    element.getAttribute("contenteditable") === ""
+  );
+}
+
+async function handleClipboardWrite(text) {
+  try {
+    await Neutralino.clipboard.writeText(text);
+  } catch (clipboardError) {
+    console.error("Failed to write clipboard contents:", clipboardError);
+  }
+}
+
+async function handleClipboardRead() {
+  try {
+    return await Neutralino.clipboard.readText();
+  } catch (clipboardError) {
+    console.error("Failed to read clipboard contents:", clipboardError);
+    return "";
+  }
+}
+
+function dispatchInputEvent(element) {
+  if (!element) {
+    return;
+  }
+  const event = new Event("input", { bubbles: true });
+  element.dispatchEvent(event);
+}
+
+function handleSelectAll(event, activeElement) {
+  if (isEditableElement(activeElement)) {
+    activeElement.select();
+    event.preventDefault();
+    return true;
+  }
+
+  const selection = window.getSelection();
+  if (!selection) {
+    return false;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(document.body);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  event.preventDefault();
+  return true;
+}
+
+async function handleCopyOrCut(event, activeElement, intent) {
+  const selection = window.getSelection();
+  let selectedText = "";
+
+  if (isEditableElement(activeElement)) {
+    const { selectionStart, selectionEnd, value } = activeElement;
+    if (
+      typeof selectionStart === "number" &&
+      typeof selectionEnd === "number" &&
+      selectionStart !== selectionEnd
+    ) {
+      selectedText = value.slice(selectionStart, selectionEnd);
+    }
+  }
+
+  if (!selectedText && selection) {
+    selectedText = selection.toString();
+  }
+
+  if (!selectedText) {
+    return false;
+  }
+
+  event.preventDefault();
+  await handleClipboardWrite(selectedText);
+
+  if (
+    intent === "cut" &&
+    isEditableElement(activeElement) &&
+    typeof activeElement.selectionStart === "number" &&
+    typeof activeElement.selectionEnd === "number"
+  ) {
+    const start = activeElement.selectionStart;
+    const end = activeElement.selectionEnd;
+    const value = activeElement.value;
+    activeElement.value = `${value.slice(0, start)}${value.slice(end)}`;
+    activeElement.setSelectionRange(start, start);
+    dispatchInputEvent(activeElement);
+  }
+
+  return true;
+}
+
+async function handlePaste(event, activeElement) {
+  if (!isEditableElement(activeElement)) {
+    return false;
+  }
+
+  event.preventDefault();
+  const pasteText = await handleClipboardRead();
+
+  if (typeof pasteText !== "string") {
+    return false;
+  }
+
+  const { selectionStart, selectionEnd, value } = activeElement;
+  if (typeof selectionStart !== "number" || typeof selectionEnd !== "number") {
+    return false;
+  }
+
+  const insertionPoint = selectionStart + pasteText.length;
+  activeElement.value = `${value.slice(0, selectionStart)}${pasteText}${value.slice(
+    selectionEnd
+  )}`;
+  activeElement.setSelectionRange(insertionPoint, insertionPoint);
+  dispatchInputEvent(activeElement);
+  return true;
+}
+
+function performEditingCommand(command, event) {
+  const fallbackEvent = { preventDefault() {} };
+  const normalizedEvent = event != null ? event : fallbackEvent;
+
+  if (typeof normalizedEvent.preventDefault !== "function") {
+    normalizedEvent.preventDefault = fallbackEvent.preventDefault;
+  }
+
+  const activeElement = document.activeElement;
+
+  switch (command) {
+    case "quit":
+      normalizedEvent.preventDefault();
+      Neutralino.app.exit();
+      return Promise.resolve(true);
+    case "selectAll":
+      return Promise.resolve(handleSelectAll(normalizedEvent, activeElement));
+    case "copy":
+      return handleCopyOrCut(normalizedEvent, activeElement, "copy");
+    case "cut":
+      return handleCopyOrCut(normalizedEvent, activeElement, "cut");
+    case "paste":
+      return handlePaste(normalizedEvent, activeElement);
+    default:
+      return Promise.resolve(false);
+  }
+}
+
+function registerEditingShortcuts() {
+  document.addEventListener("keydown", (event) => {
+    const modifierActive = isMacPlatform ? event.metaKey : event.ctrlKey;
+    if (!modifierActive) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+    if (key === "q" && (isMacPlatform || event.ctrlKey)) {
+      performEditingCommand("quit", event).catch((err) => {
+        console.error("Quit shortcut failed:", err);
+      });
+      return;
+    }
+
+    if (key === "a") {
+      performEditingCommand("selectAll", event).catch((err) => {
+        console.error("Select All shortcut failed:", err);
+      });
+      return;
+    }
+
+    if (key === "c") {
+      performEditingCommand("copy", event).catch((err) => {
+        console.error("Copy shortcut failed:", err);
+      });
+      return;
+    }
+
+    if (key === "x") {
+      performEditingCommand("cut", event).catch((err) => {
+        console.error("Cut shortcut failed:", err);
+      });
+      return;
+    }
+
+    if (key === "v") {
+      performEditingCommand("paste", event).catch((err) => {
+        console.error("Paste shortcut failed:", err);
+      });
+      return;
+    }
+  });
+}
 let lastClipboardContent = "";
 
 // Function to monitor clipboard content
 async function getClipboardContent() {
+  if (!CLIPBOARD_MONITORING_ENABLED) {
+    return;
+  }
+  const { activeConnectionId } = store.getState();
+  if (!activeConnectionId) {
+    console.warn("No active connection selected. Clipboard monitoring paused.");
+    return;
+  }
+
+  if (isEditableElement(document.activeElement)) {
+    return;
+  }
   try {
     const clipboardText = await Neutralino.clipboard.readText();
     if (clipboardText !== lastClipboardContent) {
@@ -21,32 +266,259 @@ async function getClipboardContent() {
 const initialState = {
   connections: [], // Array of MongoDB connections
   currentForm: null, // State for tracking the current form (edit or add)
+  activeConnectionId: null,
 };
 
 // Create the store
 const store = unistore(initialState);
 
+// Runtime persistence helpers
+const CONFIG_FOLDER_NAME = "candygram";
+const CONFIG_FILE_NAME = "connections.json";
+const packagedConnectionsFilePath = "./resources/config/connections.json";
+let connectionsFilePathPromise = null;
+
+function joinPath(base, ...segments) {
+  const separator = base.includes("\\") ? "\\" : "/";
+  let sanitizedBase = base;
+  if (sanitizedBase.length > 1) {
+    sanitizedBase = sanitizedBase.replace(/[\\/]+$/, "");
+  }
+
+  const cleanedSegments = segments
+    .map((segment) =>
+      segment.replace(/^[\\/]+/, "").replace(/[\\/]+$/, "")
+    )
+    .filter(Boolean);
+
+  if (sanitizedBase === separator) {
+    return `${separator}${cleanedSegments.join(separator)}`;
+  }
+
+  if (cleanedSegments.length === 0) {
+    return sanitizedBase;
+  }
+
+  return [sanitizedBase, ...cleanedSegments].join(separator);
+}
+
+function isMissingPathError(err) {
+  if (!err) {
+    return false;
+  }
+
+  const code = err.code;
+  if (code === "NE_FS_NOPATHE" || code === "NE_FS_NOENT") {
+    return true;
+  }
+
+  const message = (err.message || "").toLowerCase();
+  return (
+    message.includes("not exist") || message.includes("no such")
+  );
+}
+
+function getParentDirectory(path) {
+  if (!path) {
+    return "";
+  }
+
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const match = trimmed.match(/^(.*?)[\\/][^\\/]+$/);
+
+  if (!match) {
+    if (/^[a-zA-Z]:$/.test(trimmed)) {
+      return `${trimmed}\\`;
+    }
+
+    if (trimmed === "") {
+      return "";
+    }
+
+    return trimmed;
+  }
+
+  const parent = match[1];
+
+  if (!parent) {
+    return trimmed.startsWith("\\") ? "\\\\" : "/";
+  }
+
+  if (/^[a-zA-Z]:$/.test(parent)) {
+    return `${parent}\\`;
+  }
+
+  return parent;
+}
+
+async function ensureDirectoryExists(path) {
+  try {
+    const stats = await Neutralino.filesystem.getStats(path);
+    if (stats && stats.isDirectory) {
+      return;
+    }
+
+    throw new Error(`Path exists but is not a directory: ${path}`);
+  } catch (err) {
+    if (!isMissingPathError(err)) {
+      if (err && err.code === "NE_FS_DIRCRER") {
+        try {
+          const stats = await Neutralino.filesystem.getStats(path);
+          if (stats && stats.isDirectory) {
+            return;
+          }
+        } catch (statsErr) {
+          if (!isMissingPathError(statsErr)) {
+            throw err;
+          }
+        }
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  const parentDirectory = getParentDirectory(path);
+  if (parentDirectory && parentDirectory !== path) {
+    await ensureDirectoryExists(parentDirectory);
+  }
+
+  try {
+    await Neutralino.filesystem.createDirectory(path);
+  } catch (createErr) {
+    if (isMissingPathError(createErr) && parentDirectory && parentDirectory !== path) {
+      await ensureDirectoryExists(parentDirectory);
+      return ensureDirectoryExists(path);
+    }
+
+    const message = (createErr && createErr.message) || "";
+    if (
+      createErr &&
+      createErr.code === "NE_FS_DIRCRER" &&
+      /exists/i.test(message)
+    ) {
+      return;
+    }
+
+    if (/exists/i.test(message)) {
+      return;
+    }
+
+    throw createErr;
+  }
+}
+
+async function getConnectionsFilePath() {
+  if (!connectionsFilePathPromise) {
+    connectionsFilePathPromise = (async () => {
+      const configBase = await Neutralino.os.getPath("config");
+      const appConfigDir = joinPath(configBase, CONFIG_FOLDER_NAME);
+      try {
+        await ensureDirectoryExists(appConfigDir);
+      } catch (err) {
+        console.error("Failed to prepare Candygram config directory:", err);
+        throw err;
+      }
+      return joinPath(appConfigDir, CONFIG_FILE_NAME);
+    })();
+  }
+
+  return connectionsFilePathPromise;
+}
+
 // Define actions
 const actions = {
   addConnection(state, connection) {
+    const nextConnection = {
+      ...connection,
+      isActive: Boolean(connection.isActive),
+    };
+
+    let connections = [...state.connections, nextConnection];
+    let activeConnectionId = state.activeConnectionId;
+
+    if (nextConnection.isActive) {
+      activeConnectionId = nextConnection.id;
+      connections = connections.map((conn) => ({
+        ...conn,
+        isActive: conn.id === nextConnection.id,
+      }));
+    }
+
     return {
-      connections: [...state.connections, connection],
+      connections,
       currentForm: null,
+      activeConnectionId,
     };
   },
   updateConnection(state, updatedConnection) {
+    let activeConnectionId = state.activeConnectionId;
+
+    const connections = state.connections.map((conn) => {
+      if (conn.id !== updatedConnection.id) {
+        if (updatedConnection.isActive) {
+          return { ...conn, isActive: false };
+        }
+        return conn;
+      }
+
+      const merged = {
+        ...conn,
+        ...updatedConnection,
+        isActive:
+          updatedConnection.isActive !== undefined
+            ? Boolean(updatedConnection.isActive)
+            : Boolean(conn.isActive),
+      };
+
+      if (merged.isActive) {
+        activeConnectionId = merged.id;
+      } else if (state.activeConnectionId === merged.id) {
+        activeConnectionId = null;
+      }
+
+      return merged;
+    });
+
     return {
-      connections: state.connections.map((conn) =>
-        conn.id === updatedConnection.id ? updatedConnection : conn
-      ),
+      connections,
       currentForm: null,
+      activeConnectionId,
     };
   },
   deleteConnection(state, id) {
-    return { connections: state.connections.filter((conn) => conn.id !== id) };
+    const wasActive = state.activeConnectionId === id;
+    const connections = state.connections
+      .filter((conn) => conn.id !== id)
+      .map((conn) =>
+        wasActive
+          ? {
+              ...conn,
+              isActive: false,
+            }
+          : conn
+      );
+
+    return {
+      connections,
+      activeConnectionId: wasActive ? null : state.activeConnectionId,
+    };
   },
   setCurrentForm(state, formState) {
     return { ...state, currentForm: formState };
+  },
+  setActiveConnection(state, id) {
+    const activeConnectionId = id || null;
+    const connections = state.connections.map((conn) => ({
+      ...conn,
+      isActive: activeConnectionId !== null && conn.id === activeConnectionId,
+    }));
+
+    return {
+      ...state,
+      connections,
+      activeConnectionId,
+    };
   },
 };
 
@@ -55,16 +527,15 @@ const addConnection = store.action(actions.addConnection);
 const updateConnection = store.action(actions.updateConnection);
 const deleteConnection = store.action(actions.deleteConnection);
 const setCurrentForm = store.action(actions.setCurrentForm);
-
-// Path to save the connections
-const connectionsFilePath = "./resources/config/connections.json";
+const setActiveConnection = store.action(actions.setActiveConnection);
 
 // Save connections to the file
 async function saveConnections() {
   try {
+    const filePath = await getConnectionsFilePath();
     const data = JSON.stringify(store.getState().connections, null, 2);
-    await Neutralino.filesystem.writeFile(connectionsFilePath, data);
-    console.log("Connections saved successfully!");
+    await Neutralino.filesystem.writeFile(filePath, data);
+    console.log("Connections saved successfully to", filePath);
   } catch (err) {
     console.error("Failed to save connections:", err);
   }
@@ -72,23 +543,132 @@ async function saveConnections() {
 
 // Load connections from the file
 async function loadConnections() {
+  let userData = null;
+
   try {
-    const data = await Neutralino.filesystem.readFile(connectionsFilePath);
-    const connections = JSON.parse(data);
-    store.setState({ connections });
+    const filePath = await getConnectionsFilePath();
+    userData = await Neutralino.filesystem.readFile(filePath);
   } catch (err) {
-    console.warn("No existing connections file found or failed to load:", err);
+    console.info(
+      "No existing user connections file found. Starting with defaults.",
+      err
+    );
+  }
+
+  if (userData) {
+    try {
+      const parsed = JSON.parse(userData);
+      let connections = [];
+      let activeConnectionId = null;
+
+      if (Array.isArray(parsed)) {
+        connections = parsed.map((conn) => {
+          const normalized = {
+            ...conn,
+            isActive: Boolean(conn.isActive),
+          };
+
+          if (normalized.isActive && activeConnectionId === null) {
+            activeConnectionId =
+              typeof normalized.id !== "undefined" ? normalized.id : null;
+          }
+
+          return normalized;
+        });
+      } else if (parsed && Array.isArray(parsed.connections)) {
+        activeConnectionId =
+          parsed.activeConnectionId !== undefined
+            ? parsed.activeConnectionId
+            : null;
+        connections = parsed.connections.map((conn) => ({
+          ...conn,
+          isActive: Boolean(conn.isActive),
+        }));
+
+        if (activeConnectionId === null) {
+          const activeFromConnections = connections.find((conn) => conn.isActive);
+          if (activeFromConnections) {
+            if (typeof activeFromConnections.id !== "undefined") {
+              activeConnectionId = activeFromConnections.id;
+            } else {
+              activeConnectionId = null;
+            }
+          }
+        }
+      }
+
+      if (activeConnectionId !== null) {
+        connections = connections.map((conn) => ({
+          ...conn,
+          isActive: conn.id === activeConnectionId,
+        }));
+      }
+
+      store.setState({ connections, activeConnectionId });
+      return;
+    } catch (err) {
+      console.error("Failed to parse user connections file:", err);
+    }
+  }
+
+  try {
+    const packagedData = await Neutralino.filesystem.readFile(
+      packagedConnectionsFilePath
+    );
+    const parsed = JSON.parse(packagedData);
+    const normalizedConnections = Array.isArray(parsed)
+      ? parsed.map((conn) => ({
+          ...conn,
+          isActive: Boolean(conn.isActive),
+        }))
+      : [];
+
+    const activeFromConnections = normalizedConnections.find(
+      (conn) => conn.isActive
+    );
+
+    let normalizedActiveId = null;
+    if (activeFromConnections && typeof activeFromConnections.id !== "undefined") {
+      normalizedActiveId = activeFromConnections.id;
+    }
+
+    store.setState({
+      connections: normalizedConnections,
+      activeConnectionId: normalizedActiveId,
+    });
+  } catch (fallbackError) {
+    console.warn("Failed to load packaged sample connections:", fallbackError);
+    store.setState({ connections: [], activeConnectionId: null });
   }
 }
 
 // Render the list of connections
-function renderConnections(connections) {
+function renderConnections(connections, activeConnectionId) {
   const list = document.getElementById("connection-list");
   list.innerHTML = "";
 
   connections.forEach((connection) => {
     const listItem = document.createElement("li");
-    listItem.textContent = connection.name;
+    listItem.className = "flex items-center justify-between p-2 border-b";
+    if (connection.id === activeConnectionId) {
+      listItem.classList.add("bg-blue-100");
+    }
+
+    const nameContainer = document.createElement("span");
+    nameContainer.textContent = connection.name;
+
+    const controls = document.createElement("div");
+    controls.className = "flex items-center";
+
+    const activateButton = document.createElement("input");
+    activateButton.type = "radio";
+    activateButton.name = "active-connection";
+    activateButton.className = "mr-2";
+    activateButton.checked = connection.id === activeConnectionId;
+    activateButton.setAttribute("aria-label", `Activate ${connection.name}`);
+    activateButton.onclick = () => {
+      setActiveConnection(connection.id);
+    };
 
     const editButton = document.createElement("button");
     editButton.textContent = "Edit";
@@ -106,8 +686,12 @@ function renderConnections(connections) {
       deleteConnection(connection.id);
     };
 
-    listItem.appendChild(editButton);
-    listItem.appendChild(deleteButton);
+    controls.appendChild(activateButton);
+    controls.appendChild(editButton);
+    controls.appendChild(deleteButton);
+
+    listItem.appendChild(nameContainer);
+    listItem.appendChild(controls);
     list.appendChild(listItem);
   });
 }
@@ -161,7 +745,7 @@ function renderForm(formState) {
     if (formState.type === "edit") {
       updateConnection({ ...connection, name, uri });
     } else if (formState.type === "add") {
-      addConnection({ id: Date.now(), name, uri });
+      addConnection({ id: Date.now(), name, uri, isActive: false });
     }
   };
 
@@ -181,7 +765,7 @@ document.getElementById("add-new-button").addEventListener("click", () => {
 
 // Subscribe to state changes
 store.subscribe((state) => {
-  renderConnections(state.connections);
+  renderConnections(state.connections, state.activeConnectionId);
   renderForm(state.currentForm);
   saveConnections(); // Automatically save on any state change
 });
@@ -189,8 +773,28 @@ store.subscribe((state) => {
 // Initialize the app
 async function init() {
   await loadConnections(); // Load connections from file
-  renderConnections(store.getState().connections); // Initial render
-  setInterval(getClipboardContent, 1000);
+  const { connections, activeConnectionId } = store.getState();
+  renderConnections(connections, activeConnectionId); // Initial render
+  if (CLIPBOARD_MONITORING_ENABLED) {
+    setInterval(getClipboardContent, 1000);
+  }
 }
 
+document.addEventListener(MENU_EVENT_NAME, (event) => {
+  let actionId = null;
+  if (event && event.detail && typeof event.detail.id !== "undefined") {
+    actionId = event.detail.id;
+  }
+  const command = MENU_ACTION_MAP[actionId];
+
+  if (!command) {
+    return;
+  }
+
+  performEditingCommand(command).catch((err) => {
+    console.error(`Menu command "${command}" failed:`, err);
+  });
+});
+
+registerEditingShortcuts();
 init();
