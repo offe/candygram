@@ -32,6 +32,8 @@ const MENU_ACTION_MAP = {
 
 const CLIPBOARD_STATUS_ELEMENT_ID = "clipboard-status";
 const CLIPBOARD_OUTPUT_ELEMENT_ID = "clipboard-output";
+const OBJECT_ID_INPUT_ELEMENT_ID = "objectid-input";
+const CLIPBOARD_SCAN_TOGGLE_ELEMENT_ID = "clipboard-scan-toggle";
 const CLIPBOARD_STATUS_TONES = {
   info: "text-gray-600",
   success: "text-green-600",
@@ -383,6 +385,8 @@ function registerEditingShortcuts() {
 let lastClipboardContent = "";
 let clipboardLookupSequence = 0;
 let lastActiveConnectionId = null;
+let isClipboardScanEnabled = CLIPBOARD_MONITORING_ENABLED;
+let objectIdInputValue = "";
 
 function getClipboardStatusElement() {
   return document.getElementById(CLIPBOARD_STATUS_ELEMENT_ID);
@@ -413,11 +417,71 @@ function clearClipboardOutput() {
   outputElement.classList.add("hidden");
 }
 
+function getObjectIdInputElement() {
+  return document.getElementById(OBJECT_ID_INPUT_ELEMENT_ID);
+}
+
+function getClipboardScanToggleElement() {
+  return document.getElementById(CLIPBOARD_SCAN_TOGGLE_ELEMENT_ID);
+}
+
+function applyClipboardScanState() {
+  const toggle = getClipboardScanToggleElement();
+  if (toggle) {
+    toggle.checked = Boolean(isClipboardScanEnabled);
+    if (!CLIPBOARD_MONITORING_ENABLED) {
+      toggle.disabled = true;
+      toggle.title = "Clipboard scanning is unavailable.";
+    } else {
+      toggle.disabled = false;
+      toggle.removeAttribute("title");
+    }
+  }
+
+  const input = getObjectIdInputElement();
+  if (input) {
+    input.setAttribute("aria-live", "polite");
+  }
+}
+
+function setClipboardScanEnabled(enabled) {
+  const normalized = CLIPBOARD_MONITORING_ENABLED ? Boolean(enabled) : false;
+  if (normalized === isClipboardScanEnabled) {
+    return;
+  }
+
+  isClipboardScanEnabled = normalized;
+  applyClipboardScanState();
+
+  if (isClipboardScanEnabled) {
+    renderClipboardIdleState();
+    if (CLIPBOARD_MONITORING_ENABLED) {
+      getClipboardContent();
+    }
+  } else {
+    renderClipboardIdleState();
+  }
+}
+
+function setObjectIdInputValue(value, { fromClipboard = false } = {}) {
+  objectIdInputValue = typeof value === "string" ? value : "";
+  const input = getObjectIdInputElement();
+  if (input && input.value !== objectIdInputValue) {
+    input.value = objectIdInputValue;
+  }
+
+  if (fromClipboard && input) {
+    input.dataset.lastSource = "clipboard";
+  } else if (input) {
+    input.dataset.lastSource = "input";
+  }
+}
+
 function renderClipboardIdleState() {
-  updateClipboardMessage(
-    "Copy a MongoDB ObjectId to search the active connection.",
-    "info"
-  );
+  const idleMessage = isClipboardScanEnabled
+    ? "Copy a MongoDB ObjectId to search the active connection."
+    : "Enter a MongoDB ObjectId to search the active connection.";
+  updateClipboardMessage(idleMessage, "info");
   clearClipboardOutput();
 }
 
@@ -507,6 +571,80 @@ function extractObjectIdFromClipboard(text) {
   return null;
 }
 
+async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
+  const state = store.getState();
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === state.activeConnectionId)
+    : null;
+
+  if (!activeConnection) {
+    updateClipboardMessage(
+      `Ready to search for ObjectId(${objectId}). Select an active connection first.`,
+      "warning",
+    );
+    clearClipboardOutput();
+    return;
+  }
+
+  const lookupToken = ++clipboardLookupSequence;
+  updateClipboardMessage(`Searching for ObjectId(${objectId})...`, "info");
+  renderClipboardLoading(objectId);
+
+  try {
+    const lookupResult = await lookupObjectIdInConnection(activeConnection, objectId);
+
+    if (lookupToken !== clipboardLookupSequence) {
+      return;
+    }
+
+    if (lookupResult.status === "found") {
+      updateClipboardMessage(
+        `Found ${lookupResult.matches.length} document(s) matching ObjectId(${objectId}).`,
+        "success",
+      );
+      renderClipboardMatches(lookupResult.matches);
+      return;
+    }
+
+    if (
+      lookupResult.status === "not_found" ||
+      lookupResult.status === "no_collections"
+    ) {
+      updateClipboardMessage(`ObjectId(${objectId}) Object not found.`, "error");
+      clearClipboardOutput();
+      return;
+    }
+
+    if (lookupResult.status === "dependency_missing") {
+      updateClipboardMessage(lookupResult.message, "error");
+      clearClipboardOutput();
+      return;
+    }
+
+    if (lookupResult.status === "invalid") {
+      updateClipboardMessage(lookupResult.message, "error");
+      clearClipboardOutput();
+      return;
+    }
+
+    updateClipboardMessage(
+      lookupResult.message || "Failed to search for the ObjectId.",
+      "error",
+    );
+    clearClipboardOutput();
+  } catch (error) {
+    if (lookupToken !== clipboardLookupSequence) {
+      return;
+    }
+
+    updateClipboardMessage(
+      (error && error.message) || "Unexpected error while processing the lookup.",
+      "error",
+    );
+    clearClipboardOutput();
+  }
+}
+
 async function lookupObjectIdInConnection(connection, objectId) {
   if (!connection || !connection.uri) {
     return {
@@ -593,9 +731,14 @@ async function lookupObjectIdInConnection(connection, objectId) {
 }
 
 async function processClipboardContent(clipboardText) {
+  if (!isClipboardScanEnabled) {
+    return;
+  }
+
   const trimmed = typeof clipboardText === "string" ? clipboardText.trim() : "";
 
   if (!trimmed) {
+    setObjectIdInputValue("", { fromClipboard: true });
     renderClipboardIdleState();
     return;
   }
@@ -605,88 +748,49 @@ async function processClipboardContent(clipboardText) {
     const preview = getFirstClipboardLine(clipboardText);
     updateClipboardMessage(
       `Clipboard is not a valid ObjectId. First line: ${preview || "(empty)"}`,
-      "error"
+      "error",
     );
     clearClipboardOutput();
     return;
   }
 
-  const state = store.getState();
-  const activeConnection = Array.isArray(state.connections)
-    ? state.connections.find((conn) => conn.id === state.activeConnectionId)
-    : null;
+  setObjectIdInputValue(objectId, { fromClipboard: true });
+  await runObjectIdLookup(objectId, { source: "clipboard" });
+}
 
-  if (!activeConnection) {
-    updateClipboardMessage(
-      `Ready to search for ObjectId(${objectId}). Select an active connection first.`,
-      "warning"
-    );
+function handleManualLookupRequest(rawValue, { showInvalidFeedback = false } = {}) {
+  const trimmed = typeof rawValue === "string" ? rawValue.trim() : "";
+
+  if (!trimmed) {
+    renderClipboardIdleState();
     clearClipboardOutput();
-    return;
+    return Promise.resolve();
   }
 
-  const lookupToken = ++clipboardLookupSequence;
-  updateClipboardMessage(`Searching for ObjectId(${objectId})...`, "info");
-  renderClipboardLoading(objectId);
-
-  try {
-    const lookupResult = await lookupObjectIdInConnection(activeConnection, objectId);
-
-    if (lookupToken !== clipboardLookupSequence) {
-      return;
-    }
-
-    if (lookupResult.status === "found") {
-      updateClipboardMessage(
-        `Found ${lookupResult.matches.length} document(s) matching ObjectId(${objectId}).`,
-        "success"
-      );
-      renderClipboardMatches(lookupResult.matches);
-      return;
-    }
-
-    if (
-      lookupResult.status === "not_found" ||
-      lookupResult.status === "no_collections"
-    ) {
-      updateClipboardMessage(`ObjectId(${objectId}) Object not found.`, "error");
+  const objectId = extractObjectIdFromClipboard(trimmed);
+  if (!objectId) {
+    if (trimmed.length >= 24) {
+      if (showInvalidFeedback) {
+        updateClipboardMessage("Input is not a valid ObjectId.", "error");
+      } else {
+        updateClipboardMessage("Enter a valid ObjectId to search.", "info");
+      }
       clearClipboardOutput();
-      return;
+    } else {
+      renderClipboardIdleState();
     }
 
-    if (lookupResult.status === "dependency_missing") {
-      updateClipboardMessage(lookupResult.message, "error");
-      clearClipboardOutput();
-      return;
-    }
-
-    if (lookupResult.status === "invalid") {
-      updateClipboardMessage(lookupResult.message, "error");
-      clearClipboardOutput();
-      return;
-    }
-
-    updateClipboardMessage(
-      lookupResult.message || "Failed to search for the clipboard ObjectId.",
-      "error"
-    );
-    clearClipboardOutput();
-  } catch (error) {
-    if (lookupToken !== clipboardLookupSequence) {
-      return;
-    }
-
-    updateClipboardMessage(
-      (error && error.message) || "Unexpected error while processing clipboard content.",
-      "error"
-    );
-    clearClipboardOutput();
+    return Promise.resolve();
   }
+
+  setObjectIdInputValue(objectId);
+
+  return runObjectIdLookup(objectId, { source: "input" });
 }
 
 // Function to monitor clipboard content
 async function getClipboardContent() {
-  if (!CLIPBOARD_MONITORING_ENABLED) {
+  if (!CLIPBOARD_MONITORING_ENABLED || !isClipboardScanEnabled) {
     return;
   }
 
@@ -1091,32 +1195,40 @@ function renderConnections(connections, activeConnectionId) {
 
   connections.forEach((connection) => {
     const listItem = document.createElement("li");
-    listItem.className = "flex items-center justify-between p-2 border-b";
+    listItem.className = "flex items-center justify-between gap-3 p-2 border-b";
     if (connection.id === activeConnectionId) {
       listItem.classList.add("bg-blue-100");
     }
 
-    const nameContainer = document.createElement("span");
-    nameContainer.textContent = connection.name;
-
-    const controls = document.createElement("div");
-    controls.className = "flex items-center";
+    const leftGroup = document.createElement("div");
+    leftGroup.className = "flex items-center gap-2";
 
     const activateButton = document.createElement("input");
     activateButton.type = "radio";
     activateButton.name = "active-connection";
-    activateButton.className = "mr-2";
+    activateButton.className =
+      "h-4 w-4 border-gray-300 text-sky-600 focus:ring-sky-500";
     activateButton.checked = connection.id === activeConnectionId;
     activateButton.setAttribute("aria-label", `Activate ${connection.name}`);
     activateButton.onclick = () => {
       setActiveConnection(connection.id);
     };
 
+    const nameContainer = document.createElement("span");
+    nameContainer.className = "text-sm font-medium text-gray-700";
+    nameContainer.textContent = connection.name;
+
+    leftGroup.appendChild(activateButton);
+    leftGroup.appendChild(nameContainer);
+
+    const controls = document.createElement("div");
+    controls.className = "flex items-center gap-2";
+
     const editButton = createIconButton({
       iconName: "FaEdit",
       ariaLabel: `Edit ${connection.name}`,
       buttonClass:
-        "ml-2 text-sky-600 hover:text-sky-700 focus:ring-sky-500 hover:bg-sky-50",
+        "text-sky-600 hover:text-sky-700 focus:ring-sky-500 hover:bg-sky-50",
       iconClass: "w-4 h-4",
       fallbackContent: "✎",
     });
@@ -1128,7 +1240,7 @@ function renderConnections(connections, activeConnectionId) {
       iconName: "FaTrash",
       ariaLabel: `Delete ${connection.name}`,
       buttonClass:
-        "ml-2 text-red-600 hover:text-red-700 focus:ring-red-500 hover:bg-red-50",
+        "text-red-600 hover:text-red-700 focus:ring-red-500 hover:bg-red-50",
       iconClass: "w-4 h-4",
       fallbackContent: "🗑",
     });
@@ -1136,11 +1248,10 @@ function renderConnections(connections, activeConnectionId) {
       deleteConnection(connection.id);
     };
 
-    controls.appendChild(activateButton);
     controls.appendChild(editButton);
     controls.appendChild(deleteButton);
 
-    listItem.appendChild(nameContainer);
+    listItem.appendChild(leftGroup);
     listItem.appendChild(controls);
     list.appendChild(listItem);
   });
@@ -1448,6 +1559,62 @@ function renderForm(formState) {
   }
 }
 
+function setupObjectIdInput() {
+  const input = getObjectIdInputElement();
+  if (input) {
+    input.addEventListener("input", (event) => {
+      setObjectIdInputValue(event.target.value || "");
+
+      if (isClipboardScanEnabled) {
+        return;
+      }
+
+      handleManualLookupRequest(objectIdInputValue, {
+        showInvalidFeedback: false,
+      }).catch((error) => {
+        console.error("Manual ObjectId lookup failed:", error);
+      });
+    });
+
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (isClipboardScanEnabled) {
+        return;
+      }
+
+      handleManualLookupRequest(objectIdInputValue, {
+        showInvalidFeedback: true,
+      }).catch((error) => {
+        console.error("Manual ObjectId lookup failed:", error);
+      });
+    });
+  }
+
+  const toggle = getClipboardScanToggleElement();
+  if (toggle) {
+    toggle.checked = Boolean(isClipboardScanEnabled);
+    toggle.addEventListener("change", (event) => {
+      const { checked } = event.target;
+      setClipboardScanEnabled(checked);
+
+      if (!checked) {
+        handleManualLookupRequest(objectIdInputValue, {
+          showInvalidFeedback: false,
+        }).catch((error) => {
+          console.error("Manual ObjectId lookup failed:", error);
+        });
+      }
+    });
+  }
+
+  applyClipboardScanState();
+}
+
 function setupSidebarToggle() {
   const sidebar = document.getElementById("settings-sidebar");
   const sidebarContent = document.getElementById("sidebar-content");
@@ -1626,17 +1793,25 @@ store.subscribe((state) => {
   renderForm(state.currentForm);
   saveConnections(); // Automatically save on any state change
 
-  if (!CLIPBOARD_MONITORING_ENABLED) {
-    return;
-  }
-
   if (state.activeConnectionId !== lastActiveConnectionId) {
     lastActiveConnectionId = state.activeConnectionId;
-
-    if (typeof lastClipboardContent === "string" && lastClipboardContent) {
-      processClipboardContent(lastClipboardContent).catch((error) => {
+    if (CLIPBOARD_MONITORING_ENABLED && isClipboardScanEnabled) {
+      if (typeof lastClipboardContent === "string" && lastClipboardContent) {
+        processClipboardContent(lastClipboardContent).catch((error) => {
+          console.error(
+            "Failed to refresh clipboard lookup after connection change:",
+            error
+          );
+        });
+      } else {
+        renderClipboardIdleState();
+      }
+    } else if (objectIdInputValue && objectIdInputValue.trim()) {
+      handleManualLookupRequest(objectIdInputValue, {
+        showInvalidFeedback: false,
+      }).catch((error) => {
         console.error(
-          "Failed to refresh clipboard lookup after connection change:",
+          "Failed to refresh manual lookup after connection change:",
           error
         );
       });
@@ -1651,19 +1826,20 @@ async function init() {
   await loadConnections(); // Load connections from file
   const { connections, activeConnectionId } = store.getState();
   renderConnections(connections, activeConnectionId); // Initial render
+  renderClipboardIdleState();
+
   if (CLIPBOARD_MONITORING_ENABLED) {
-    renderClipboardIdleState();
-    try {
-      const initialClipboard = await Neutralino.clipboard.readText();
-      lastClipboardContent = initialClipboard;
-      await processClipboardContent(initialClipboard);
-    } catch (clipboardError) {
-      console.warn("Unable to read initial clipboard contents:", clipboardError);
+    if (isClipboardScanEnabled) {
+      try {
+        const initialClipboard = await Neutralino.clipboard.readText();
+        lastClipboardContent = initialClipboard;
+        await processClipboardContent(initialClipboard);
+      } catch (clipboardError) {
+        console.warn("Unable to read initial clipboard contents:", clipboardError);
+      }
     }
 
     setInterval(getClipboardContent, 1000);
-  } else {
-    renderClipboardIdleState();
   }
 }
 
@@ -1683,6 +1859,7 @@ document.addEventListener(MENU_EVENT_NAME, (event) => {
   });
 });
 
+setupObjectIdInput();
 setupSidebarToggle();
 registerEditingShortcuts();
 init();

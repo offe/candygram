@@ -57,6 +57,34 @@
               <div class="flex items-center justify-start">
                 <h1 class="text-xl font-bold text-gray-700">Clipboard Lookup</h1>
               </div>
+              <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <label for="objectid-input" class="text-sm font-medium text-gray-700"
+                  >ObjectId</label
+                >
+                <div class="flex w-full flex-col gap-2 sm:flex-row sm:items-center">
+                  <input
+                    id="objectid-input"
+                    type="text"
+                    inputmode="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="Enter a MongoDB ObjectId"
+                    class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                    aria-describedby="clipboard-status"
+                  />
+                  <label
+                    for="clipboard-scan-toggle"
+                    class="flex cursor-pointer items-center gap-2 text-sm text-gray-700"
+                  >
+                    <input
+                      id="clipboard-scan-toggle"
+                      type="checkbox"
+                      class="h-4 w-4 rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+                    />
+                    <span>Scan clipboard</span>
+                  </label>
+                </div>
+              </div>
               <p id="clipboard-status" class="text-sm text-gray-600">
                 Copy a MongoDB ObjectId to search the active connection.
               </p>
