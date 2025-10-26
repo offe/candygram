@@ -1273,6 +1273,55 @@ function renderForm(formState) {
   }
 }
 
+function setupSidebarToggle() {
+  const sidebar = document.getElementById("settings-sidebar");
+  const sidebarContent = document.getElementById("sidebar-content");
+  const toggleButton = document.getElementById("sidebar-toggle");
+
+  if (!sidebar || !toggleButton) {
+    return;
+  }
+
+  let collapsed = false;
+
+  const applySidebarState = () => {
+    if (collapsed) {
+      sidebar.classList.add("w-0", "border-r-0", "shadow-none");
+      sidebar.classList.remove("w-72", "border-r", "shadow-md");
+      sidebar.setAttribute("aria-hidden", "true");
+
+      if (sidebarContent) {
+        sidebarContent.classList.add("opacity-0", "pointer-events-none");
+        sidebarContent.classList.remove("opacity-100");
+      }
+
+      toggleButton.textContent = "Show Settings";
+      toggleButton.setAttribute("aria-expanded", "false");
+      toggleButton.setAttribute("aria-label", "Expand settings sidebar");
+    } else {
+      sidebar.classList.add("w-72", "border-r", "shadow-md");
+      sidebar.classList.remove("w-0", "border-r-0", "shadow-none");
+      sidebar.setAttribute("aria-hidden", "false");
+
+      if (sidebarContent) {
+        sidebarContent.classList.remove("opacity-0", "pointer-events-none");
+        sidebarContent.classList.add("opacity-100");
+      }
+
+      toggleButton.textContent = "Hide Settings";
+      toggleButton.setAttribute("aria-expanded", "true");
+      toggleButton.setAttribute("aria-label", "Collapse settings sidebar");
+    }
+  };
+
+  applySidebarState();
+
+  toggleButton.addEventListener("click", () => {
+    collapsed = !collapsed;
+    applySidebarState();
+  });
+}
+
 // Set up event listener for "Add New" button
 document.getElementById("add-new-button").addEventListener("click", () => {
   setCurrentForm({ type: "add" });
@@ -1341,5 +1390,6 @@ document.addEventListener(MENU_EVENT_NAME, (event) => {
   });
 });
 
+setupSidebarToggle();
 registerEditingShortcuts();
 init();

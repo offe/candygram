@@ -18,30 +18,51 @@
     <link rel="stylesheet" href="/assets/css/tailwind.css" />
      -->
   </head>
-  <body class="bg-gray-100 flex flex-col items-center p-4">
-    <!-- Connections List -->
-    <div class="mt-4 w-full max-w-lg">
-      <h2 class="text-lg font-bold text-gray-700">Connections</h2>
-      <ul id="connection-list" class="mt-2 space-y-1"></ul>
-      <button
-        id="add-new-button"
-        class="mt-2 bg-sky-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md"
-        aria-label="Add a new connection"
-      >
-        Add New
-      </button>
-    </div>
+  <body class="bg-gray-100 min-h-screen">
+    <div class="flex h-screen w-full">
+      <!-- Sidebar -->
+      <aside id="settings-sidebar" class="bg-white shadow-md border-r border-gray-200 flex flex-col w-72 flex-shrink-0 transition-all duration-300 overflow-hidden">
+        <div id="sidebar-content" class="flex-1 overflow-y-auto opacity-100 transition-opacity duration-200">
+          <section class="px-4 py-4 border-b border-gray-200">
+            <h2 class="text-lg font-bold text-gray-700">Connections</h2>
+            <ul id="connection-list" class="mt-3 space-y-2"></ul>
+            <button
+              id="add-new-button"
+              class="mt-4 bg-sky-500 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md w-full"
+              aria-label="Add a new connection"
+            >
+              Add Connection
+            </button>
+          </section>
+          <section id="form-container" class="px-4 py-4 space-y-4"></section>
+        </div>
+      </aside>
 
-    <!-- Form Container -->
-    <div id="form-container" class="mt-4 w-full max-w-lg"></div>
-
-    <!-- Clipboard Inspector -->
-    <div class="mt-4 w-full max-w-lg bg-white shadow-lg rounded-lg p-6">
-      <h1 class="text-xl font-bold text-gray-700 mb-4">Clipboard Lookup</h1>
-      <p id="clipboard-status" class="text-sm text-gray-600">
-        Copy a MongoDB ObjectId to search the active connection.
-      </p>
-      <div id="clipboard-output" class="mt-4 space-y-4 hidden"></div>
+      <!-- Main Content -->
+      <main class="flex-1 overflow-y-auto">
+        <div class="max-w-3xl mx-auto p-6">
+          <div class="bg-white shadow-lg rounded-lg p-6">
+            <div class="flex flex-col gap-4">
+              <div class="flex items-center justify-between">
+                <h1 class="text-xl font-bold text-gray-700">Clipboard Lookup</h1>
+                <button
+                  id="sidebar-toggle"
+                  class="text-sm font-medium text-sky-600 border border-sky-500 px-3 py-1 rounded-md bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                  aria-controls="settings-sidebar"
+                  aria-expanded="true"
+                  type="button"
+                >
+                  Hide Settings
+                </button>
+              </div>
+              <p id="clipboard-status" class="text-sm text-gray-600">
+                Copy a MongoDB ObjectId to search the active connection.
+              </p>
+              <div id="clipboard-output" class="mt-2 space-y-4 hidden"></div>
+            </div>
+          </div>
+        </div>
+      </main>
     </div>
 
     <!-- Neutralino.js client -->
