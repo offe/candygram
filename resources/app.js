@@ -10,6 +10,22 @@ async function getClipboardContent() {
     console.warn("No active connection selected. Clipboard monitoring paused.");
     return;
   }
+
+  const activeElement = document.activeElement;
+  const isEditingTextField =
+    activeElement &&
+    !activeElement.readOnly &&
+    !activeElement.disabled &&
+    ((activeElement.tagName === "INPUT" &&
+      !["button", "submit", "reset", "radio", "checkbox"].includes(
+        activeElement.type
+      )) ||
+      activeElement.tagName === "TEXTAREA" ||
+      activeElement.isContentEditable);
+
+  if (isEditingTextField) {
+    return;
+  }
   try {
     const clipboardText = await Neutralino.clipboard.readText();
     if (clipboardText !== lastClipboardContent) {
