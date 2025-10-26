@@ -491,7 +491,11 @@ async function loadConnections() {
         if (activeConnectionId === null) {
           const activeFromConnections = connections.find((conn) => conn.isActive);
           if (activeFromConnections) {
-            activeConnectionId = activeFromConnections.id ?? null;
+            if (typeof activeFromConnections.id !== "undefined") {
+              activeConnectionId = activeFromConnections.id;
+            } else {
+              activeConnectionId = null;
+            }
           }
         }
       }
@@ -675,7 +679,10 @@ async function init() {
 }
 
 document.addEventListener(MENU_EVENT_NAME, (event) => {
-  const actionId = event?.detail?.id;
+  let actionId = null;
+  if (event && event.detail && typeof event.detail.id !== "undefined") {
+    actionId = event.detail.id;
+  }
   const command = MENU_ACTION_MAP[actionId];
 
   if (!command) {

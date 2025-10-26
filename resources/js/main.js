@@ -61,13 +61,26 @@ function dispatchMenuAction(actionId) {
 }
 
 function registerNativeMenuEvents() {
-  if (!Neutralino?.events?.on) {
+  if (
+    !Neutralino ||
+    !Neutralino.events ||
+    typeof Neutralino.events.on !== "function"
+  ) {
     return;
   }
 
   NATIVE_MENU_EVENT_CANDIDATES.forEach((eventName) => {
     Neutralino.events.on(eventName, (event) => {
-      const candidateId = event?.detail?.id || event?.detail;
+      let candidateId = null;
+
+      if (event) {
+        if (event.detail && typeof event.detail.id !== "undefined") {
+          candidateId = event.detail.id;
+        } else if (typeof event.detail !== "undefined") {
+          candidateId = event.detail;
+        }
+      }
+
       if (!candidateId) {
         return;
       }
@@ -85,7 +98,11 @@ function setApplicationMenu() {
     return;
   }
 
-  if (typeof Neutralino?.os?.setMenu !== "function") {
+  if (
+    !Neutralino ||
+    !Neutralino.os ||
+    typeof Neutralino.os.setMenu !== "function"
+  ) {
     console.warn("INFO: Native menu support is unavailable in this build.");
     return;
   }
