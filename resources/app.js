@@ -2,6 +2,200 @@
 
 // Clipboard monitoring
 const CLIPBOARD_MONITORING_ENABLED = false;
+const isMacPlatform = typeof NL_OS !== "undefined" && NL_OS === "Darwin";
+const unsupportedInputTypes = new Set([
+  "button",
+  "submit",
+  "reset",
+  "radio",
+  "checkbox",
+  "file",
+  "color",
+  "image",
+  "range",
+  "date",
+  "datetime-local",
+  "month",
+  "time",
+  "week",
+  "hidden",
+]);
+
+function isEditableElement(element) {
+  if (!element || element.readOnly || element.disabled) {
+    return false;
+  }
+
+  if (element.tagName === "INPUT") {
+    return !unsupportedInputTypes.has(element.type);
+  }
+
+  return (
+    element.tagName === "TEXTAREA" ||
+    element.isContentEditable === true ||
+    element.contentEditable === "true" ||
+    element.contentEditable === "plaintext-only" ||
+    element.getAttribute("contenteditable") === ""
+  );
+}
+
+async function handleClipboardWrite(text) {
+  try {
+    await Neutralino.clipboard.writeText(text);
+  } catch (clipboardError) {
+    console.error("Failed to write clipboard contents:", clipboardError);
+  }
+}
+
+async function handleClipboardRead() {
+  try {
+    return await Neutralino.clipboard.readText();
+  } catch (clipboardError) {
+    console.error("Failed to read clipboard contents:", clipboardError);
+    return "";
+  }
+}
+
+function dispatchInputEvent(element) {
+  if (!element) {
+    return;
+  }
+  const event = new Event("input", { bubbles: true });
+  element.dispatchEvent(event);
+}
+
+function handleSelectAll(event, activeElement) {
+  if (isEditableElement(activeElement)) {
+    activeElement.select();
+    event.preventDefault();
+    return true;
+  }
+
+  const selection = window.getSelection();
+  if (!selection) {
+    return false;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(document.body);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  event.preventDefault();
+  return true;
+}
+
+async function handleCopyOrCut(event, activeElement, intent) {
+  const selection = window.getSelection();
+  let selectedText = "";
+
+  if (isEditableElement(activeElement)) {
+    const { selectionStart, selectionEnd, value } = activeElement;
+    if (
+      typeof selectionStart === "number" &&
+      typeof selectionEnd === "number" &&
+      selectionStart !== selectionEnd
+    ) {
+      selectedText = value.slice(selectionStart, selectionEnd);
+    }
+  }
+
+  if (!selectedText && selection) {
+    selectedText = selection.toString();
+  }
+
+  if (!selectedText) {
+    return false;
+  }
+
+  event.preventDefault();
+  await handleClipboardWrite(selectedText);
+
+  if (
+    intent === "cut" &&
+    isEditableElement(activeElement) &&
+    typeof activeElement.selectionStart === "number" &&
+    typeof activeElement.selectionEnd === "number"
+  ) {
+    const start = activeElement.selectionStart;
+    const end = activeElement.selectionEnd;
+    const value = activeElement.value;
+    activeElement.value = `${value.slice(0, start)}${value.slice(end)}`;
+    activeElement.setSelectionRange(start, start);
+    dispatchInputEvent(activeElement);
+  }
+
+  return true;
+}
+
+async function handlePaste(event, activeElement) {
+  if (!isEditableElement(activeElement)) {
+    return false;
+  }
+
+  event.preventDefault();
+  const pasteText = await handleClipboardRead();
+
+  if (typeof pasteText !== "string") {
+    return false;
+  }
+
+  const { selectionStart, selectionEnd, value } = activeElement;
+  if (typeof selectionStart !== "number" || typeof selectionEnd !== "number") {
+    return false;
+  }
+
+  const insertionPoint = selectionStart + pasteText.length;
+  activeElement.value = `${value.slice(0, selectionStart)}${pasteText}${value.slice(
+    selectionEnd
+  )}`;
+  activeElement.setSelectionRange(insertionPoint, insertionPoint);
+  dispatchInputEvent(activeElement);
+  return true;
+}
+
+function registerEditingShortcuts() {
+  document.addEventListener("keydown", (event) => {
+    const modifierActive = isMacPlatform ? event.metaKey : event.ctrlKey;
+    if (!modifierActive) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+    const activeElement = document.activeElement;
+
+    if (key === "q" && (isMacPlatform || event.ctrlKey)) {
+      event.preventDefault();
+      Neutralino.app.exit();
+      return;
+    }
+
+    if (key === "a") {
+      handleSelectAll(event, activeElement);
+      return;
+    }
+
+    if (key === "c") {
+      handleCopyOrCut(event, activeElement, "copy").catch((err) => {
+        console.error("Copy shortcut failed:", err);
+      });
+      return;
+    }
+
+    if (key === "x") {
+      handleCopyOrCut(event, activeElement, "cut").catch((err) => {
+        console.error("Cut shortcut failed:", err);
+      });
+      return;
+    }
+
+    if (key === "v") {
+      handlePaste(event, activeElement).catch((err) => {
+        console.error("Paste shortcut failed:", err);
+      });
+      return;
+    }
+  });
+}
 let lastClipboardContent = "";
 
 // Function to monitor clipboard content
@@ -15,19 +209,7 @@ async function getClipboardContent() {
     return;
   }
 
-  const activeElement = document.activeElement;
-  const isEditingTextField =
-    activeElement &&
-    !activeElement.readOnly &&
-    !activeElement.disabled &&
-    ((activeElement.tagName === "INPUT" &&
-      !["button", "submit", "reset", "radio", "checkbox"].includes(
-        activeElement.type
-      )) ||
-      activeElement.tagName === "TEXTAREA" ||
-      activeElement.isContentEditable);
-
-  if (isEditingTextField) {
+  if (isEditableElement(document.activeElement)) {
     return;
   }
   try {
@@ -454,4 +636,5 @@ async function init() {
   }
 }
 
+registerEditingShortcuts();
 init();
