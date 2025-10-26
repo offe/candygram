@@ -5,6 +5,11 @@ let lastClipboardContent = "";
 
 // Function to monitor clipboard content
 async function getClipboardContent() {
+  const { activeConnectionId } = store.getState();
+  if (!activeConnectionId) {
+    console.warn("No active connection selected. Clipboard monitoring paused.");
+    return;
+  }
   try {
     const clipboardText = await Neutralino.clipboard.readText();
     if (clipboardText !== lastClipboardContent) {
@@ -21,32 +26,163 @@ async function getClipboardContent() {
 const initialState = {
   connections: [], // Array of MongoDB connections
   currentForm: null, // State for tracking the current form (edit or add)
+  activeConnectionId: null,
 };
 
 // Create the store
 const store = unistore(initialState);
 
+// Runtime persistence helpers
+const CONFIG_FOLDER_NAME = "candygram";
+const CONFIG_FILE_NAME = "connections.json";
+const packagedConnectionsFilePath = "./resources/config/connections.json";
+let connectionsFilePathPromise = null;
+
+function joinPath(base, ...segments) {
+  const separator = base.includes("\\") ? "\\" : "/";
+  let sanitizedBase = base;
+  if (sanitizedBase.length > 1) {
+    sanitizedBase = sanitizedBase.replace(/[\\/]+$/, "");
+  }
+
+  const cleanedSegments = segments
+    .map((segment) =>
+      segment.replace(/^[\\/]+/, "").replace(/[\\/]+$/, "")
+    )
+    .filter(Boolean);
+
+  if (sanitizedBase === separator) {
+    return `${separator}${cleanedSegments.join(separator)}`;
+  }
+
+  if (cleanedSegments.length === 0) {
+    return sanitizedBase;
+  }
+
+  return [sanitizedBase, ...cleanedSegments].join(separator);
+}
+
+async function ensureDirectoryExists(path) {
+  try {
+    await Neutralino.filesystem.createDirectory(path);
+  } catch (err) {
+    if (!err || !/exists/i.test(err.message || "")) {
+      throw err;
+    }
+  }
+}
+
+async function getConnectionsFilePath() {
+  if (!connectionsFilePathPromise) {
+    connectionsFilePathPromise = (async () => {
+      const configBase = await Neutralino.os.getPath("config");
+      const appConfigDir = joinPath(configBase, CONFIG_FOLDER_NAME);
+      try {
+        await ensureDirectoryExists(appConfigDir);
+      } catch (err) {
+        console.error("Failed to prepare Candygram config directory:", err);
+        throw err;
+      }
+      return joinPath(appConfigDir, CONFIG_FILE_NAME);
+    })();
+  }
+
+  return connectionsFilePathPromise;
+}
+
 // Define actions
 const actions = {
   addConnection(state, connection) {
+    const nextConnection = {
+      ...connection,
+      isActive: Boolean(connection.isActive),
+    };
+
+    let connections = [...state.connections, nextConnection];
+    let activeConnectionId = state.activeConnectionId;
+
+    if (nextConnection.isActive) {
+      activeConnectionId = nextConnection.id;
+      connections = connections.map((conn) => ({
+        ...conn,
+        isActive: conn.id === nextConnection.id,
+      }));
+    }
+
     return {
-      connections: [...state.connections, connection],
+      connections,
       currentForm: null,
+      activeConnectionId,
     };
   },
   updateConnection(state, updatedConnection) {
+    let activeConnectionId = state.activeConnectionId;
+
+    const connections = state.connections.map((conn) => {
+      if (conn.id !== updatedConnection.id) {
+        if (updatedConnection.isActive) {
+          return { ...conn, isActive: false };
+        }
+        return conn;
+      }
+
+      const merged = {
+        ...conn,
+        ...updatedConnection,
+        isActive:
+          updatedConnection.isActive !== undefined
+            ? Boolean(updatedConnection.isActive)
+            : Boolean(conn.isActive),
+      };
+
+      if (merged.isActive) {
+        activeConnectionId = merged.id;
+      } else if (state.activeConnectionId === merged.id) {
+        activeConnectionId = null;
+      }
+
+      return merged;
+    });
+
     return {
-      connections: state.connections.map((conn) =>
-        conn.id === updatedConnection.id ? updatedConnection : conn
-      ),
+      connections,
       currentForm: null,
+      activeConnectionId,
     };
   },
   deleteConnection(state, id) {
-    return { connections: state.connections.filter((conn) => conn.id !== id) };
+    const wasActive = state.activeConnectionId === id;
+    const connections = state.connections
+      .filter((conn) => conn.id !== id)
+      .map((conn) =>
+        wasActive
+          ? {
+              ...conn,
+              isActive: false,
+            }
+          : conn
+      );
+
+    return {
+      connections,
+      activeConnectionId: wasActive ? null : state.activeConnectionId,
+    };
   },
   setCurrentForm(state, formState) {
     return { ...state, currentForm: formState };
+  },
+  setActiveConnection(state, id) {
+    const activeConnectionId = id || null;
+    const connections = state.connections.map((conn) => ({
+      ...conn,
+      isActive: activeConnectionId !== null && conn.id === activeConnectionId,
+    }));
+
+    return {
+      ...state,
+      connections,
+      activeConnectionId,
+    };
   },
 };
 
@@ -55,16 +191,15 @@ const addConnection = store.action(actions.addConnection);
 const updateConnection = store.action(actions.updateConnection);
 const deleteConnection = store.action(actions.deleteConnection);
 const setCurrentForm = store.action(actions.setCurrentForm);
-
-// Path to save the connections
-const connectionsFilePath = "./resources/config/connections.json";
+const setActiveConnection = store.action(actions.setActiveConnection);
 
 // Save connections to the file
 async function saveConnections() {
   try {
+    const filePath = await getConnectionsFilePath();
     const data = JSON.stringify(store.getState().connections, null, 2);
-    await Neutralino.filesystem.writeFile(connectionsFilePath, data);
-    console.log("Connections saved successfully!");
+    await Neutralino.filesystem.writeFile(filePath, data);
+    console.log("Connections saved successfully to", filePath);
   } catch (err) {
     console.error("Failed to save connections:", err);
   }
@@ -72,23 +207,122 @@ async function saveConnections() {
 
 // Load connections from the file
 async function loadConnections() {
+  let userData = null;
+
   try {
-    const data = await Neutralino.filesystem.readFile(connectionsFilePath);
-    const connections = JSON.parse(data);
-    store.setState({ connections });
+    const filePath = await getConnectionsFilePath();
+    userData = await Neutralino.filesystem.readFile(filePath);
   } catch (err) {
-    console.warn("No existing connections file found or failed to load:", err);
+    console.info(
+      "No existing user connections file found. Starting with defaults.",
+      err
+    );
+  }
+
+  if (userData) {
+    try {
+      const parsed = JSON.parse(userData);
+      let connections = [];
+      let activeConnectionId = null;
+
+      if (Array.isArray(parsed)) {
+        connections = parsed.map((conn) => {
+          const normalized = {
+            ...conn,
+            isActive: Boolean(conn.isActive),
+          };
+
+          if (normalized.isActive && activeConnectionId === null) {
+            activeConnectionId = normalized.id ?? null;
+          }
+
+          return normalized;
+        });
+      } else if (parsed && Array.isArray(parsed.connections)) {
+        activeConnectionId =
+          parsed.activeConnectionId !== undefined
+            ? parsed.activeConnectionId
+            : null;
+        connections = parsed.connections.map((conn) => ({
+          ...conn,
+          isActive: Boolean(conn.isActive),
+        }));
+
+        if (activeConnectionId === null) {
+          const activeFromConnections = connections.find((conn) => conn.isActive);
+          if (activeFromConnections) {
+            activeConnectionId = activeFromConnections.id ?? null;
+          }
+        }
+      }
+
+      if (activeConnectionId !== null) {
+        connections = connections.map((conn) => ({
+          ...conn,
+          isActive: conn.id === activeConnectionId,
+        }));
+      }
+
+      store.setState({ connections, activeConnectionId });
+      return;
+    } catch (err) {
+      console.error("Failed to parse user connections file:", err);
+    }
+  }
+
+  try {
+    const packagedData = await Neutralino.filesystem.readFile(
+      packagedConnectionsFilePath
+    );
+    const parsed = JSON.parse(packagedData);
+    const normalizedConnections = Array.isArray(parsed)
+      ? parsed.map((conn) => ({
+          ...conn,
+          isActive: Boolean(conn.isActive),
+        }))
+      : [];
+
+    const activeFromConnections = normalizedConnections.find(
+      (conn) => conn.isActive
+    );
+
+    store.setState({
+      connections: normalizedConnections,
+      activeConnectionId: activeFromConnections?.id ?? null,
+    });
+  } catch (fallbackError) {
+    console.warn("Failed to load packaged sample connections:", fallbackError);
+    store.setState({ connections: [], activeConnectionId: null });
   }
 }
 
 // Render the list of connections
-function renderConnections(connections) {
+function renderConnections(connections, activeConnectionId) {
   const list = document.getElementById("connection-list");
   list.innerHTML = "";
 
   connections.forEach((connection) => {
     const listItem = document.createElement("li");
-    listItem.textContent = connection.name;
+    listItem.className = "flex items-center justify-between p-2 border-b";
+    if (connection.id === activeConnectionId) {
+      listItem.classList.add("bg-blue-100");
+    }
+
+    const nameContainer = document.createElement("span");
+    nameContainer.textContent = connection.name;
+
+    const controls = document.createElement("div");
+    controls.className = "flex items-center";
+
+    const activateButton = document.createElement("input");
+    activateButton.type = "radio";
+    activateButton.name = "active-connection";
+    activateButton.className = "mr-2";
+    activateButton.checked = connection.id === activeConnectionId;
+    activateButton.setAttribute("aria-label", `Activate ${connection.name}`);
+    activateButton.onclick = () => {
+      setActiveConnection(connection.id);
+    };
 
     const editButton = document.createElement("button");
     editButton.textContent = "Edit";
@@ -106,8 +340,12 @@ function renderConnections(connections) {
       deleteConnection(connection.id);
     };
 
-    listItem.appendChild(editButton);
-    listItem.appendChild(deleteButton);
+    controls.appendChild(activateButton);
+    controls.appendChild(editButton);
+    controls.appendChild(deleteButton);
+
+    listItem.appendChild(nameContainer);
+    listItem.appendChild(controls);
     list.appendChild(listItem);
   });
 }
@@ -161,7 +399,7 @@ function renderForm(formState) {
     if (formState.type === "edit") {
       updateConnection({ ...connection, name, uri });
     } else if (formState.type === "add") {
-      addConnection({ id: Date.now(), name, uri });
+      addConnection({ id: Date.now(), name, uri, isActive: false });
     }
   };
 
@@ -181,7 +419,7 @@ document.getElementById("add-new-button").addEventListener("click", () => {
 
 // Subscribe to state changes
 store.subscribe((state) => {
-  renderConnections(state.connections);
+  renderConnections(state.connections, state.activeConnectionId);
   renderForm(state.currentForm);
   saveConnections(); // Automatically save on any state change
 });
@@ -189,7 +427,8 @@ store.subscribe((state) => {
 // Initialize the app
 async function init() {
   await loadConnections(); // Load connections from file
-  renderConnections(store.getState().connections); // Initial render
+  const { connections, activeConnectionId } = store.getState();
+  renderConnections(connections, activeConnectionId); // Initial render
   setInterval(getClipboardContent, 1000);
 }
 
