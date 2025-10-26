@@ -701,75 +701,6 @@ function escapeShellDoubleQuotes(value) {
   return value.replace(/(["\\$`])/g, "\\$1");
 }
 
-function parseMongoPingOutput(output) {
-  if (!output) {
-    return false;
-  }
-
-  const trimmedOutput = String(output).trim();
-  if (!trimmedOutput) {
-    return false;
-  }
-
-  const lines = trimmedOutput
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed && typeof parsed.ok !== "undefined" && Number(parsed.ok) === 1) {
-        return true;
-      }
-    } catch (parseError) {
-      // Ignore JSON parse errors for non-JSON lines
-    }
-  }
-
-  if (/"ok"\s*[:=]\s*(1(?:\.0)?)/.test(trimmedOutput)) {
-    return true;
-  }
-
-  return false;
-}
-
-async function runMongoPing(binary, uri) {
-  const escapedUri = escapeShellDoubleQuotes(uri);
-  const evalExpression =
-    binary === "mongosh"
-      ? "JSON.stringify(await db.runCommand({ ping: 1 }))"
-      : "JSON.stringify(db.runCommand({ ping: 1 }))";
-  const command = `${binary} "${escapedUri}" --quiet --eval "${evalExpression}"`;
-
-  try {
-    const result = await Neutralino.os.execCommand(command);
-    const success =
-      result &&
-      Number(result.exitCode) === 0 &&
-      parseMongoPingOutput(result.stdOut);
-
-    return {
-      binary,
-      command,
-      success,
-      exitCode: result ? result.exitCode : null,
-      stdOut: result ? result.stdOut : "",
-      stdErr: result ? result.stdErr : "",
-    };
-  } catch (error) {
-    return {
-      binary,
-      command,
-      success: false,
-      error,
-      exitCode: null,
-      stdOut: "",
-      stdErr: "",
-    };
-  }
-}
-
 async function testConnection(uri) {
   if (
     !Neutralino ||
@@ -780,7 +711,7 @@ async function testConnection(uri) {
       success: false,
       attempts: [
         {
-          binary: "client",
+          binary: "mongodb-node-driver",
           command: "",
           success: false,
           error: new Error("Neutralino OS command execution is unavailable."),
@@ -789,16 +720,54 @@ async function testConnection(uri) {
     };
   }
 
-  const binaries = ["mongosh", "mongo"];
+  const driverLabel = "mongodb-node-driver";
+  const escapedUri = escapeShellDoubleQuotes(uri);
+  const command = `node resources/scripts/testMongoConnection.js "${escapedUri}"`;
   const attempts = [];
 
-  for (const binary of binaries) {
-    const attempt = await runMongoPing(binary, uri);
+  try {
+    const result = await Neutralino.os.execCommand(command);
+    const success = result && Number(result.exitCode) === 0;
+    let parsedOutput = null;
+
+    if (result && result.stdOut) {
+      const trimmedOutput = String(result.stdOut).trim();
+      const lines = trimmedOutput.split(/\r?\n/).filter(Boolean);
+      for (const line of lines) {
+        try {
+          parsedOutput = JSON.parse(line);
+          break;
+        } catch (error) {
+          // Ignore lines that are not JSON
+        }
+      }
+    }
+
+    const attempt = {
+      binary: driverLabel,
+      command,
+      success,
+      exitCode: result ? result.exitCode : null,
+      stdOut: result ? result.stdOut : "",
+      stdErr: result ? result.stdErr : "",
+      parsedOutput,
+    };
+
     attempts.push(attempt);
 
-    if (attempt.success) {
+    if (success) {
       return { success: true, attempts };
     }
+  } catch (error) {
+    attempts.push({
+      binary: driverLabel,
+      command,
+      success: false,
+      error,
+      exitCode: null,
+      stdOut: "",
+      stdErr: "",
+    });
   }
 
   if (Neutralino.debug && typeof Neutralino.debug.log === "function") {
@@ -819,6 +788,14 @@ async function testConnection(uri) {
 
       if (attempt.error) {
         summaryParts.push(`error=${attempt.error}`);
+      }
+
+      if (attempt.parsedOutput) {
+        try {
+          summaryParts.push(`parsed=${JSON.stringify(attempt.parsedOutput)}`);
+        } catch (serializationError) {
+          // Ignore serialization issues for parsed output logging.
+        }
       }
 
       Neutralino.debug.log(summaryParts.join(" | "));
@@ -950,14 +927,16 @@ function renderForm(formState) {
               ? result.attempts.find((attempt) => attempt.success)
               : null;
 
+          const parsedOutput = successfulAttempt ? successfulAttempt.parsedOutput : null;
+          const successMessage = parsedOutput && typeof parsedOutput.ok !== "undefined"
+            ? `Successfully connected (ok=${parsedOutput.ok}).`
+            : "Successfully connected using the MongoDB Node.js driver.";
+
           if (testResultElement) {
-            const binaryName = successfulAttempt
-              ? successfulAttempt.binary
-              : "client";
-            testResultElement.textContent = `Successfully connected using ${binaryName}.`;
+            testResultElement.textContent = successMessage;
             testResultElement.className = "mt-2 text-sm text-green-600";
           } else {
-            alert("Connection successful.");
+            alert(successMessage);
           }
         } else {
           const failureDetails = summarizeFailedAttempts(result.attempts);
