@@ -30,6 +30,15 @@ const MENU_ACTION_MAP = {
   "menu:edit:selectAll": "selectAll",
 };
 
+const CLIPBOARD_STATUS_ELEMENT_ID = "clipboard-status";
+const CLIPBOARD_OUTPUT_ELEMENT_ID = "clipboard-output";
+const CLIPBOARD_STATUS_TONES = {
+  info: "text-gray-600",
+  success: "text-green-600",
+  error: "text-red-600",
+  warning: "text-yellow-600",
+};
+
 function isEditableElement(element) {
   if (!element || element.readOnly || element.disabled) {
     return false;
@@ -235,15 +244,312 @@ function registerEditingShortcuts() {
   });
 }
 let lastClipboardContent = "";
+let clipboardLookupSequence = 0;
+let lastActiveConnectionId = null;
+
+function getClipboardStatusElement() {
+  return document.getElementById(CLIPBOARD_STATUS_ELEMENT_ID);
+}
+
+function getClipboardOutputElement() {
+  return document.getElementById(CLIPBOARD_OUTPUT_ELEMENT_ID);
+}
+
+function updateClipboardMessage(message, tone = "info") {
+  const element = getClipboardStatusElement();
+  if (!element) {
+    return;
+  }
+
+  const toneClass = CLIPBOARD_STATUS_TONES[tone] || CLIPBOARD_STATUS_TONES.info;
+  element.textContent = message;
+  element.className = `text-sm ${toneClass}`;
+}
+
+function clearClipboardOutput() {
+  const outputElement = getClipboardOutputElement();
+  if (!outputElement) {
+    return;
+  }
+
+  outputElement.innerHTML = "";
+  outputElement.classList.add("hidden");
+}
+
+function renderClipboardIdleState() {
+  updateClipboardMessage(
+    "Copy a MongoDB ObjectId to search the active connection.",
+    "info"
+  );
+  clearClipboardOutput();
+}
+
+function renderClipboardLoading(objectId) {
+  const outputElement = getClipboardOutputElement();
+  if (!outputElement) {
+    return;
+  }
+
+  outputElement.innerHTML = "";
+  const loadingMessage = document.createElement("div");
+  loadingMessage.className = "text-xs text-gray-500";
+  loadingMessage.textContent = `Running ObjectId lookup for ObjectId(${objectId})...`;
+  outputElement.appendChild(loadingMessage);
+  outputElement.classList.remove("hidden");
+}
+
+function renderClipboardMatches(matches) {
+  const outputElement = getClipboardOutputElement();
+  if (!outputElement) {
+    return;
+  }
+
+  outputElement.innerHTML = "";
+
+  matches.forEach((match) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "border border-gray-200 rounded-md p-3";
+
+    const heading = document.createElement("div");
+    heading.className = "text-sm font-semibold text-gray-700";
+    const collectionName = match && match.collection ? String(match.collection) : "unknown collection";
+    heading.textContent = `Found in ${collectionName}`;
+
+    const jsonBlock = document.createElement("pre");
+    jsonBlock.className =
+      "mt-2 text-xs bg-gray-50 rounded-md p-2 overflow-x-auto whitespace-pre-wrap font-mono text-gray-800";
+    const documentForDisplay = match && match.document ? match.document : {};
+    jsonBlock.textContent = JSON.stringify(documentForDisplay, null, 2);
+
+    wrapper.appendChild(heading);
+    wrapper.appendChild(jsonBlock);
+    outputElement.appendChild(wrapper);
+  });
+
+  outputElement.classList.remove("hidden");
+}
+
+function getFirstClipboardLine(text) {
+  if (!text) {
+    return "";
+  }
+
+  const normalized = String(text).replace(/\r\n/g, "\n");
+  const [firstLine] = normalized.split("\n");
+  const trimmed = (firstLine || "").trim();
+
+  if (trimmed.length > 120) {
+    return `${trimmed.slice(0, 117)}…`;
+  }
+
+  return trimmed;
+}
+
+function extractObjectIdFromClipboard(text) {
+  if (!text) {
+    return null;
+  }
+
+  const plain = text.trim();
+  const objectIdPattern = /^[0-9a-fA-F]{24}$/;
+
+  if (objectIdPattern.test(plain)) {
+    return plain;
+  }
+
+  const objectIdCallMatch = plain.match(/ObjectId\((['"])([0-9a-fA-F]{24})\1\)/i);
+  if (objectIdCallMatch && objectIdCallMatch[2]) {
+    return objectIdCallMatch[2];
+  }
+
+  const oidPropertyMatch = plain.match(/"?\$oid"?\s*:\s*['"]([0-9a-fA-F]{24})['"]/);
+  if (oidPropertyMatch && oidPropertyMatch[1]) {
+    return oidPropertyMatch[1];
+  }
+
+  return null;
+}
+
+async function lookupObjectIdInConnection(connection, objectId) {
+  if (!connection || !connection.uri) {
+    return {
+      status: "error",
+      message: "Active connection is missing a MongoDB URI.",
+    };
+  }
+
+  if (
+    !Neutralino ||
+    !Neutralino.os ||
+    typeof Neutralino.os.execCommand !== "function"
+  ) {
+    return {
+      status: "error",
+      message: "Neutralino OS command execution is unavailable.",
+    };
+  }
+
+  const escapedUri = escapeShellDoubleQuotes(connection.uri);
+  const escapedObjectId = escapeShellDoubleQuotes(objectId);
+  const command =
+    `node resources/scripts/findMongoDocument.js "${escapedUri}" "${escapedObjectId}"`;
+
+  try {
+    const result = await Neutralino.os.execCommand(command);
+    const exitCode = result && typeof result.exitCode !== "undefined"
+      ? Number(result.exitCode)
+      : null;
+    const stdOut = result && result.stdOut ? String(result.stdOut).trim() : "";
+    const stdErr = result && result.stdErr ? String(result.stdErr).trim() : "";
+
+    if (exitCode === 0) {
+      if (stdOut) {
+        const lines = stdOut.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line);
+            if (parsed && parsed.status) {
+              return {
+                status: parsed.status,
+                matches: Array.isArray(parsed.matches) ? parsed.matches : [],
+              };
+            }
+          } catch (jsonError) {
+            // Ignore invalid JSON lines
+          }
+        }
+      }
+
+      return {
+        status: "error",
+        message: "Lookup script returned an unexpected response.",
+        details: stdOut,
+      };
+    }
+
+    if (stdErr.includes("Missing dependency")) {
+      return {
+        status: "dependency_missing",
+        message: stdErr,
+      };
+    }
+
+    if (stdErr.includes("Invalid ObjectId")) {
+      return {
+        status: "invalid",
+        message: stdErr,
+      };
+    }
+
+    return {
+      status: "error",
+      message: stdErr || "Lookup script failed.",
+      exitCode,
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      message: (error && error.message) || "ObjectId lookup execution failed.",
+      error,
+    };
+  }
+}
+
+async function processClipboardContent(clipboardText) {
+  const trimmed = typeof clipboardText === "string" ? clipboardText.trim() : "";
+
+  if (!trimmed) {
+    renderClipboardIdleState();
+    return;
+  }
+
+  const objectId = extractObjectIdFromClipboard(trimmed);
+  if (!objectId) {
+    const preview = getFirstClipboardLine(clipboardText);
+    updateClipboardMessage(
+      `Clipboard is not a valid ObjectId. First line: ${preview || "(empty)"}`,
+      "error"
+    );
+    clearClipboardOutput();
+    return;
+  }
+
+  const state = store.getState();
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === state.activeConnectionId)
+    : null;
+
+  if (!activeConnection) {
+    updateClipboardMessage(
+      `Ready to search for ObjectId(${objectId}). Select an active connection first.`,
+      "warning"
+    );
+    clearClipboardOutput();
+    return;
+  }
+
+  const lookupToken = ++clipboardLookupSequence;
+  updateClipboardMessage(`Searching for ObjectId(${objectId})...`, "info");
+  renderClipboardLoading(objectId);
+
+  try {
+    const lookupResult = await lookupObjectIdInConnection(activeConnection, objectId);
+
+    if (lookupToken !== clipboardLookupSequence) {
+      return;
+    }
+
+    if (lookupResult.status === "found") {
+      updateClipboardMessage(
+        `Found ${lookupResult.matches.length} document(s) matching ObjectId(${objectId}).`,
+        "success"
+      );
+      renderClipboardMatches(lookupResult.matches);
+      return;
+    }
+
+    if (
+      lookupResult.status === "not_found" ||
+      lookupResult.status === "no_collections"
+    ) {
+      updateClipboardMessage(`ObjectId(${objectId}) Object not found.`, "error");
+      clearClipboardOutput();
+      return;
+    }
+
+    if (lookupResult.status === "dependency_missing") {
+      updateClipboardMessage(lookupResult.message, "error");
+      clearClipboardOutput();
+      return;
+    }
+
+    if (lookupResult.status === "invalid") {
+      updateClipboardMessage(lookupResult.message, "error");
+      clearClipboardOutput();
+      return;
+    }
+
+    updateClipboardMessage(
+      lookupResult.message || "Failed to search for the clipboard ObjectId.",
+      "error"
+    );
+    clearClipboardOutput();
+  } catch (error) {
+    if (lookupToken !== clipboardLookupSequence) {
+      return;
+    }
+
+    updateClipboardMessage(
+      (error && error.message) || "Unexpected error while processing clipboard content.",
+      "error"
+    );
+    clearClipboardOutput();
+  }
+}
 
 // Function to monitor clipboard content
 async function getClipboardContent() {
   if (!CLIPBOARD_MONITORING_ENABLED) {
-    return;
-  }
-  const { activeConnectionId } = store.getState();
-  if (!activeConnectionId) {
-    console.warn("No active connection selected. Clipboard monitoring paused.");
     return;
   }
 
@@ -253,9 +559,8 @@ async function getClipboardContent() {
   try {
     const clipboardText = await Neutralino.clipboard.readText();
     if (clipboardText !== lastClipboardContent) {
-      document.getElementById("clipboard-content").value = clipboardText;
-      console.log(clipboardText);
       lastClipboardContent = clipboardText;
+      await processClipboardContent(clipboardText);
     }
   } catch (err) {
     console.error("Failed to read clipboard contents: ", err);
@@ -978,6 +1283,25 @@ store.subscribe((state) => {
   renderConnections(state.connections, state.activeConnectionId);
   renderForm(state.currentForm);
   saveConnections(); // Automatically save on any state change
+
+  if (!CLIPBOARD_MONITORING_ENABLED) {
+    return;
+  }
+
+  if (state.activeConnectionId !== lastActiveConnectionId) {
+    lastActiveConnectionId = state.activeConnectionId;
+
+    if (typeof lastClipboardContent === "string" && lastClipboardContent) {
+      processClipboardContent(lastClipboardContent).catch((error) => {
+        console.error(
+          "Failed to refresh clipboard lookup after connection change:",
+          error
+        );
+      });
+    } else {
+      renderClipboardIdleState();
+    }
+  }
 });
 
 // Initialize the app
@@ -986,7 +1310,18 @@ async function init() {
   const { connections, activeConnectionId } = store.getState();
   renderConnections(connections, activeConnectionId); // Initial render
   if (CLIPBOARD_MONITORING_ENABLED) {
+    renderClipboardIdleState();
+    try {
+      const initialClipboard = await Neutralino.clipboard.readText();
+      lastClipboardContent = initialClipboard;
+      await processClipboardContent(initialClipboard);
+    } catch (clipboardError) {
+      console.warn("Unable to read initial clipboard contents:", clipboardError);
+    }
+
     setInterval(getClipboardContent, 1000);
+  } else {
+    renderClipboardIdleState();
   }
 }
 

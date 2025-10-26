@@ -35,15 +35,13 @@
     <!-- Form Container -->
     <div id="form-container" class="mt-4 w-full max-w-lg"></div>
 
-    <!-- Clipboard Viewer -->
+    <!-- Clipboard Inspector -->
     <div class="mt-4 w-full max-w-lg bg-white shadow-lg rounded-lg p-6">
-      <h1 class="text-xl font-bold text-gray-700 mb-4">Clipboard Content</h1>
-      <textarea
-        id="clipboard-content"
-        class="w-full h-40 border border-gray-300 rounded-md p-2 text-sm"
-        readonly
-        aria-label="Clipboard Content"
-      ></textarea>
+      <h1 class="text-xl font-bold text-gray-700 mb-4">Clipboard Lookup</h1>
+      <p id="clipboard-status" class="text-sm text-gray-600">
+        Copy a MongoDB ObjectId to search the active connection.
+      </p>
+      <div id="clipboard-output" class="mt-4 space-y-4 hidden"></div>
     </div>
 
     <!-- Neutralino.js client -->
