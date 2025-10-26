@@ -302,13 +302,109 @@ function joinPath(base, ...segments) {
   return [sanitizedBase, ...cleanedSegments].join(separator);
 }
 
+function isMissingPathError(err) {
+  if (!err) {
+    return false;
+  }
+
+  const code = err.code;
+  if (code === "NE_FS_NOPATHE" || code === "NE_FS_NOENT") {
+    return true;
+  }
+
+  const message = (err.message || "").toLowerCase();
+  return (
+    message.includes("not exist") || message.includes("no such")
+  );
+}
+
+function getParentDirectory(path) {
+  if (!path) {
+    return "";
+  }
+
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const match = trimmed.match(/^(.*?)[\\/][^\\/]+$/);
+
+  if (!match) {
+    if (/^[a-zA-Z]:$/.test(trimmed)) {
+      return `${trimmed}\\`;
+    }
+
+    if (trimmed === "") {
+      return "";
+    }
+
+    return trimmed;
+  }
+
+  const parent = match[1];
+
+  if (!parent) {
+    return trimmed.startsWith("\\") ? "\\\\" : "/";
+  }
+
+  if (/^[a-zA-Z]:$/.test(parent)) {
+    return `${parent}\\`;
+  }
+
+  return parent;
+}
+
 async function ensureDirectoryExists(path) {
   try {
-    await Neutralino.filesystem.createDirectory(path);
-  } catch (err) {
-    if (!err || !/exists/i.test(err.message || "")) {
-      throw err;
+    const stats = await Neutralino.filesystem.getStats(path);
+    if (stats && stats.isDirectory) {
+      return;
     }
+
+    throw new Error(`Path exists but is not a directory: ${path}`);
+  } catch (err) {
+    if (!isMissingPathError(err)) {
+      if (err && err.code === "NE_FS_DIRCRER") {
+        try {
+          const stats = await Neutralino.filesystem.getStats(path);
+          if (stats && stats.isDirectory) {
+            return;
+          }
+        } catch (statsErr) {
+          if (!isMissingPathError(statsErr)) {
+            throw err;
+          }
+        }
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  const parentDirectory = getParentDirectory(path);
+  if (parentDirectory && parentDirectory !== path) {
+    await ensureDirectoryExists(parentDirectory);
+  }
+
+  try {
+    await Neutralino.filesystem.createDirectory(path);
+  } catch (createErr) {
+    if (isMissingPathError(createErr) && parentDirectory && parentDirectory !== path) {
+      await ensureDirectoryExists(parentDirectory);
+      return ensureDirectoryExists(path);
+    }
+
+    const message = (createErr && createErr.message) || "";
+    if (
+      createErr &&
+      createErr.code === "NE_FS_DIRCRER" &&
+      /exists/i.test(message)
+    ) {
+      return;
+    }
+
+    if (/exists/i.test(message)) {
+      return;
+    }
+
+    throw createErr;
   }
 }
 
