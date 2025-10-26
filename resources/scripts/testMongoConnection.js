@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { loadMongoModule } = require('./mongodbClientLoader');
+const { logMongoConnectionDetails } = require('./mongodbConnectionInfo');
 
 async function main() {
   const uri = process.argv[2];
@@ -42,6 +43,7 @@ async function main() {
 
   try {
     await client.connect();
+    logMongoConnectionDetails(uri);
     const result = await client.db().command({ ping: 1 });
     const ok = result && typeof result.ok !== 'undefined' ? Number(result.ok) : 0;
     console.log(JSON.stringify({ ok }));

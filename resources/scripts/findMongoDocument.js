@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { loadMongoModule } = require('./mongodbClientLoader');
+const { logMongoConnectionDetails } = require('./mongodbConnectionInfo');
 
 async function main() {
   const uri = process.argv[2];
@@ -60,6 +61,7 @@ async function main() {
 
   try {
     await client.connect();
+    logMongoConnectionDetails(uri);
     const db = client.db();
 
     const collectionInfos = await db
