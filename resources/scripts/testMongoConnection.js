@@ -43,7 +43,7 @@ async function main() {
 
   try {
     await client.connect();
-    logMongoConnectionDetails(uri);
+    await logMongoConnectionDetails(client, uri);
     const result = await client.db().command({ ping: 1 });
     const ok = result && typeof result.ok !== 'undefined' ? Number(result.ok) : 0;
     console.log(JSON.stringify({ ok }));

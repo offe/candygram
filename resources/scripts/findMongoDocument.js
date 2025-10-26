@@ -61,7 +61,7 @@ async function main() {
 
   try {
     await client.connect();
-    logMongoConnectionDetails(uri);
+    await logMongoConnectionDetails(client, uri);
     const db = client.db();
 
     const collectionInfos = await db

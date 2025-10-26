@@ -6,52 +6,6 @@ function safeDecode(value) {
   }
 }
 
-function normalizeUsername(username) {
-  if (!username) {
-    return "";
-  }
-
-  return username.trim().toLowerCase();
-}
-
-function inferAccessLevelFromUsername(username) {
-  const normalized = normalizeUsername(username);
-
-  if (!normalized) {
-    return null;
-  }
-
-  if (
-    normalized.includes("readonly") ||
-    normalized.includes("read-only") ||
-    /(^|[-_.])ro($|[-_.\d])/i.test(normalized)
-  ) {
-    return "read-only";
-  }
-
-  if (
-    normalized.includes("readwrite") ||
-    normalized.includes("read-write") ||
-    /(^|[-_.])rw($|[-_.\d])/i.test(normalized)
-  ) {
-    return "read/write";
-  }
-
-  if (normalized.includes("admin")) {
-    return "admin";
-  }
-
-  if (normalized.includes("writer") || normalized.includes("write")) {
-    return "write";
-  }
-
-  if (normalized.includes("reader") || normalized.includes("read")) {
-    return "read";
-  }
-
-  return null;
-}
-
 function describeMongoConnection(uri) {
   if (typeof uri !== "string" || !uri.trim()) {
     return {
@@ -75,8 +29,6 @@ function describeMongoConnection(uri) {
       ? parsed.pathname.replace(/^\//, "")
       : null;
 
-    const accessLevel = inferAccessLevelFromUsername(username);
-
     const targetLabelParts = [];
     const protoLabel = protocol || "mongodb";
     const hostLabel = host || "(unknown host)";
@@ -94,7 +46,7 @@ function describeMongoConnection(uri) {
       host,
       database,
       protocol,
-      accessLevel,
+      accessLevel: null,
       error: null,
       targetLabel,
     };
@@ -105,19 +57,86 @@ function describeMongoConnection(uri) {
       host: null,
       database: null,
       protocol: null,
-      accessLevel: null,
       error,
       targetLabel: null,
     };
   }
 }
 
-function logMongoConnectionDetails(uri, logger = console) {
+const WRITE_ACTIONS = new Set([
+  "insert",
+  "update",
+  "remove",
+  "findAndModify",
+  "createCollection",
+  "createIndex",
+  "collMod",
+  "dropCollection",
+  "dropDatabase",
+  "renameCollection",
+]);
+
+async function isEffectivelyReadOnly(client, dbName, collName) {
+  if (!client || typeof client.db !== "function") {
+    throw new Error("A connected MongoClient instance is required to inspect privileges.");
+  }
+
+  const admin = client.db("admin");
+  const { authInfo } = await admin.command({
+    connectionStatus: 1,
+    showPrivileges: true,
+  });
+
+  const privs = authInfo?.authenticatedUserPrivileges ?? [];
+
+  const matches = privs.filter((p) => {
+    if (!p?.actions?.some((action) => WRITE_ACTIONS.has(action))) {
+      return false;
+    }
+
+    const resource = p.resource || {};
+    if (resource.anyResource === true) {
+      return true;
+    }
+
+    if (resource.cluster === true) {
+      return true;
+    }
+
+    if (!resource.db) {
+      return false;
+    }
+
+    if (!dbName) {
+      return true;
+    }
+
+    if (!resource.collection && resource.db === dbName) {
+      return true;
+    }
+
+    if (resource.collection && resource.db === dbName) {
+      if (!collName) {
+        return true;
+      }
+
+      return resource.collection === collName || resource.collection === "";
+    }
+
+    return false;
+  });
+
+  return { readOnly: matches.length === 0, matches };
+}
+
+async function logMongoConnectionDetails(client, uri, logger = console, options = {}) {
   const info = describeMongoConnection(uri);
   const messages = [];
 
   if (info.error) {
-    messages.push("Connected to MongoDB but failed to parse the URI for access details.");
+    messages.push(
+      "Connected to MongoDB but failed to parse the URI for access details.",
+    );
     messages.push(`Reason: ${info.error.message || info.error}`);
   } else {
     const target = info.targetLabel || "MongoDB deployment";
@@ -129,13 +148,42 @@ function logMongoConnectionDetails(uri, logger = console) {
       connectionSummary += " without a username in the URI";
     }
 
-    if (info.accessLevel) {
-      connectionSummary += ` (detected access: ${info.accessLevel})`;
-    } else if (info.username) {
-      connectionSummary += " (access level: unknown)";
+    let privilegeSummary = null;
+
+    if (client && typeof client.db === "function") {
+      try {
+        const derivedDb =
+          options.dbName ||
+          info.database ||
+          (client.db && typeof client.db === "function"
+            ? client.db().databaseName
+            : undefined);
+
+        const { readOnly } = await isEffectivelyReadOnly(
+          client,
+          derivedDb,
+          options.collectionName,
+        );
+
+        privilegeSummary = readOnly ? "read-only" : "read/write";
+      } catch (error) {
+        messages.push(
+          `Failed to inspect MongoDB privileges: ${
+            (error && error.message) || error
+          }`,
+        );
+      }
+    } else {
+      messages.push(
+        "Unable to inspect MongoDB privileges because a connected client was not provided.",
+      );
     }
 
-    messages.push(connectionSummary + ".");
+    if (privilegeSummary) {
+      connectionSummary += ` (access: ${privilegeSummary})`;
+    }
+
+    messages.push(`${connectionSummary}.`);
   }
 
   const finalMessage = `[mongodb-connection] ${messages.join(" ")}`;
@@ -151,6 +199,7 @@ function logMongoConnectionDetails(uri, logger = console) {
 
 module.exports = {
   describeMongoConnection,
-  inferAccessLevelFromUsername,
+  isEffectivelyReadOnly,
   logMongoConnectionDetails,
+  WRITE_ACTIONS,
 };
