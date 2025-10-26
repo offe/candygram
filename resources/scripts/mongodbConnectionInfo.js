@@ -149,34 +149,60 @@ async function logMongoConnectionDetails(client, uri, logger = console, options 
     }
 
     let privilegeSummary = null;
+    const privilegeInfoFromOptions =
+      options && typeof options.privilegeInfo === "object"
+        ? options.privilegeInfo
+        : null;
+    const skipPrivilegeInspection = Boolean(options?.skipPrivilegeInspection);
+    const privilegeInspectionErrorMessage = options?.privilegeInspectionError
+      ? options.privilegeInspectionError.message
+        ? options.privilegeInspectionError.message
+        : String(options.privilegeInspectionError)
+      : null;
+    let privilegeInfo = privilegeInfoFromOptions;
 
-    if (client && typeof client.db === "function") {
-      try {
-        const derivedDb =
-          options.dbName ||
-          info.database ||
-          (client.db && typeof client.db === "function"
-            ? client.db().databaseName
-            : undefined);
+    if (!privilegeInfo) {
+      if (skipPrivilegeInspection) {
+        if (privilegeInspectionErrorMessage) {
+          messages.push(
+            `Failed to inspect MongoDB privileges: ${privilegeInspectionErrorMessage}`,
+          );
+        }
+      } else if (client && typeof client.db === "function") {
+        try {
+          const derivedDb =
+            options.dbName ||
+            info.database ||
+            (client.db && typeof client.db === "function"
+              ? client.db().databaseName
+              : undefined);
 
-        const { readOnly } = await isEffectivelyReadOnly(
-          client,
-          derivedDb,
-          options.collectionName,
-        );
-
-        privilegeSummary = readOnly ? "read-only" : "read/write";
-      } catch (error) {
+          privilegeInfo = await isEffectivelyReadOnly(
+            client,
+            derivedDb,
+            options.collectionName,
+          );
+        } catch (error) {
+          messages.push(
+            `Failed to inspect MongoDB privileges: ${
+              (error && error.message) || error
+            }`,
+          );
+        }
+      } else {
         messages.push(
-          `Failed to inspect MongoDB privileges: ${
-            (error && error.message) || error
-          }`,
+          "Unable to inspect MongoDB privileges because a connected client was not provided.",
         );
       }
-    } else {
-      messages.push(
-        "Unable to inspect MongoDB privileges because a connected client was not provided.",
-      );
+    }
+
+    if (privilegeInfo && typeof privilegeInfo.readOnly === "boolean") {
+      privilegeSummary = privilegeInfo.readOnly ? "read-only" : "read/write";
+      info.accessLevel = privilegeSummary;
+      info.readOnly = privilegeInfo.readOnly;
+      if (Array.isArray(privilegeInfo.matches)) {
+        info.privilegeMatches = privilegeInfo.matches;
+      }
     }
 
     if (privilegeSummary) {

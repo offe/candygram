@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
 const { loadMongoModule } = require('./mongodbClientLoader');
-const { logMongoConnectionDetails } = require('./mongodbConnectionInfo');
+const {
+  logMongoConnectionDetails,
+  isEffectivelyReadOnly,
+} = require('./mongodbConnectionInfo');
 
 async function main() {
   const uri = process.argv[2];
@@ -61,8 +64,22 @@ async function main() {
 
   try {
     await client.connect();
-    await logMongoConnectionDetails(client, uri);
     const db = client.db();
+    let privilegeInfo = null;
+    let privilegeInspectionError = null;
+
+    try {
+      privilegeInfo = await isEffectivelyReadOnly(client, db.databaseName);
+    } catch (error) {
+      privilegeInspectionError = error;
+    }
+
+    await logMongoConnectionDetails(client, uri, console, {
+      privilegeInfo,
+      dbName: db.databaseName,
+      skipPrivilegeInspection: true,
+      privilegeInspectionError,
+    });
 
     const collectionInfos = await db
       .listCollections({}, { nameOnly: false })
@@ -79,7 +96,17 @@ async function main() {
     const collections = collectionInfos.map((coll) => coll.name);
 
     if (!collections || collections.length === 0) {
-      console.log(JSON.stringify({ status: 'no_collections', matches: [] }));
+      console.log(
+        JSON.stringify({
+          status: 'no_collections',
+          matches: [],
+          collections: [],
+          readOnly:
+            privilegeInfo && typeof privilegeInfo.readOnly === 'boolean'
+              ? privilegeInfo.readOnly
+              : null,
+        })
+      );
       process.exit(0);
       return;
     }
@@ -106,18 +133,39 @@ async function main() {
     }
 
     if (matches.length === 0) {
-      console.log(JSON.stringify({ status: 'not_found', matches: [] }));
+      console.log(
+        JSON.stringify({
+          status: 'not_found',
+          matches: [],
+          collections,
+          readOnly:
+            privilegeInfo && typeof privilegeInfo.readOnly === 'boolean'
+              ? privilegeInfo.readOnly
+              : null,
+        })
+      );
       process.exit(0);
       return;
     }
 
     console.log(
-      JSON.stringify({ status: 'found', matches }, (_, value) => {
-        if (value instanceof ObjectId) {
-          return value.toHexString();
+      JSON.stringify(
+        {
+          status: 'found',
+          matches,
+          collections,
+          readOnly:
+            privilegeInfo && typeof privilegeInfo.readOnly === 'boolean'
+              ? privilegeInfo.readOnly
+              : null,
+        },
+        (_, value) => {
+          if (value instanceof ObjectId) {
+            return value.toHexString();
+          }
+          return value;
         }
-        return value;
-      })
+      )
     );
     process.exit(0);
   } catch (error) {

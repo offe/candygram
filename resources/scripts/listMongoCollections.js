@@ -8,6 +8,7 @@ const {
 
 async function main() {
   const uri = process.argv[2];
+
   if (!uri) {
     console.error('Missing MongoDB connection URI.');
     process.exit(2);
@@ -15,6 +16,7 @@ async function main() {
   }
 
   let MongoClient;
+
   try {
     const mongodb = await loadMongoModule();
     MongoClient = mongodb.MongoClient;
@@ -62,10 +64,24 @@ async function main() {
       skipPrivilegeInspection: true,
       privilegeInspectionError,
     });
-    const result = await db.command({ ping: 1 });
-    const ok = result && typeof result.ok !== 'undefined' ? Number(result.ok) : 0;
+
+    const collectionInfos = await db
+      .listCollections({}, { nameOnly: false })
+      .toArray();
+
+    const collections = collectionInfos
+      .filter(
+        (info) =>
+          info &&
+          typeof info.name === 'string' &&
+          !info.name.startsWith('system.') &&
+          (info.type === undefined || info.type === 'collection')
+      )
+      .map((info) => info.name);
+
     const payload = {
-      ok,
+      ok: 1,
+      collections,
       readOnly:
         privilegeInfo && typeof privilegeInfo.readOnly === 'boolean'
           ? privilegeInfo.readOnly
@@ -81,7 +97,7 @@ async function main() {
     }
 
     console.log(JSON.stringify(payload));
-    process.exit(ok === 1 ? 0 : 1);
+    process.exit(0);
   } catch (error) {
     const message = error && error.stack ? error.stack : String(error);
     console.error(message);
@@ -90,7 +106,7 @@ async function main() {
     try {
       await client.close();
     } catch (closeError) {
-      // Ignore close errors because we are exiting immediately after this.
+      // Ignore cleanup errors.
     }
   }
 }

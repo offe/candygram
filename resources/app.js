@@ -34,6 +34,8 @@ const CLIPBOARD_STATUS_ELEMENT_ID = "clipboard-status";
 const CLIPBOARD_OUTPUT_ELEMENT_ID = "clipboard-output";
 const OBJECT_ID_INPUT_ELEMENT_ID = "objectid-input";
 const CLIPBOARD_SCAN_TOGGLE_ELEMENT_ID = "clipboard-scan-toggle";
+const COLLECTIONS_STATUS_ELEMENT_ID = "collections-status";
+const COLLECTIONS_LIST_ELEMENT_ID = "collections-list";
 const CLIPBOARD_STATUS_TONES = {
   info: "text-gray-600",
   success: "text-green-600",
@@ -387,6 +389,9 @@ let clipboardLookupSequence = 0;
 let lastActiveConnectionId = null;
 let isClipboardScanEnabled = CLIPBOARD_MONITORING_ENABLED;
 let objectIdInputValue = "";
+let collectionsRequestSequence = 0;
+let lastConnectionsSnapshot = null;
+let lastActiveConnectionSignature = null;
 
 function getClipboardStatusElement() {
   return document.getElementById(CLIPBOARD_STATUS_ELEMENT_ID);
@@ -597,6 +602,32 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       return;
     }
 
+    if (Object.prototype.hasOwnProperty.call(lookupResult, "collections")) {
+      const collections = normalizeCollectionsList(lookupResult.collections);
+
+      const updates = {
+        collectionsStatus: "loaded",
+        collectionsError: null,
+        activeConnectionCollections: collections,
+      };
+
+      if (typeof lookupResult.readOnly === "boolean") {
+        updates.activeConnectionReadOnly = lookupResult.readOnly;
+      }
+
+      store.setState(updates);
+    }
+
+    if (lookupResult.status === "dependency_missing") {
+      store.setState({
+        collectionsStatus: "error",
+        collectionsError: lookupResult.message ||
+          "MongoDB driver dependency is missing. Run \"npm install\" and try again.",
+        activeConnectionCollections: [],
+        activeConnectionReadOnly: null,
+      });
+    }
+
     if (lookupResult.status === "found") {
       updateClipboardMessage("Document lookup complete.", "success");
       renderClipboardMatches(lookupResult.matches);
@@ -681,9 +712,20 @@ async function lookupObjectIdInConnection(connection, objectId) {
           try {
             const parsed = JSON.parse(line);
             if (parsed && parsed.status) {
+              const collections = Array.isArray(parsed.collections)
+                ? parsed.collections
+                : parsed.status === "no_collections"
+                ? []
+                : null;
+
+              const readOnly =
+                typeof parsed.readOnly === "boolean" ? parsed.readOnly : null;
+
               return {
                 status: parsed.status,
                 matches: Array.isArray(parsed.matches) ? parsed.matches : [],
+                collections,
+                readOnly,
               };
             }
           } catch (jsonError) {
@@ -724,6 +766,116 @@ async function lookupObjectIdInConnection(connection, objectId) {
       message: (error && error.message) || "ObjectId lookup execution failed.",
       error,
     };
+  }
+}
+
+async function fetchCollectionsForConnection(connection) {
+  if (!connection || !connection.uri) {
+    throw new Error("Active connection is missing a MongoDB URI.");
+  }
+
+  if (
+    !Neutralino ||
+    !Neutralino.os ||
+    typeof Neutralino.os.execCommand !== "function"
+  ) {
+    throw new Error("Neutralino OS command execution is unavailable.");
+  }
+
+  const escapedUri = escapeShellDoubleQuotes(connection.uri);
+  const command = `node resources/scripts/listMongoCollections.js "${escapedUri}"`;
+
+  const result = await Neutralino.os.execCommand(command);
+  const exitCode = result && typeof result.exitCode !== "undefined"
+    ? Number(result.exitCode)
+    : null;
+  const stdOut = result && result.stdOut ? String(result.stdOut).trim() : "";
+  const stdErr = result && result.stdErr ? String(result.stdErr).trim() : "";
+
+  if (exitCode === 0 && stdOut) {
+    const lines = stdOut.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === "object") {
+          const collections = normalizeCollectionsList(parsed.collections);
+          const readOnly =
+            typeof parsed.readOnly === "boolean" ? parsed.readOnly : null;
+
+          return { collections, readOnly };
+        }
+      } catch (error) {
+        // Ignore invalid JSON lines
+      }
+    }
+
+    throw new Error("Collection listing script returned an unexpected response.");
+  }
+
+  if (stdErr.includes("Missing dependency")) {
+    throw new Error(stdErr);
+  }
+
+  throw new Error(stdErr || "Failed to load collections for the active connection.");
+}
+
+async function loadCollectionsForActiveConnection() {
+  const state = store.getState();
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === state.activeConnectionId)
+    : null;
+
+  const requestToken = ++collectionsRequestSequence;
+
+  if (!activeConnection) {
+    store.setState({
+      collectionsStatus: "idle",
+      collectionsError: null,
+      activeConnectionCollections: [],
+      activeConnectionReadOnly: null,
+    });
+    return;
+  }
+
+  store.setState({
+    collectionsStatus: "loading",
+    collectionsError: null,
+    activeConnectionCollections: [],
+    activeConnectionReadOnly: null,
+  });
+
+  try {
+    const { collections, readOnly } = await fetchCollectionsForConnection(
+      activeConnection,
+    );
+
+    if (requestToken !== collectionsRequestSequence) {
+      return;
+    }
+
+    const updates = {
+      collectionsStatus: "loaded",
+      collectionsError: null,
+      activeConnectionCollections: normalizeCollectionsList(collections),
+    };
+
+    if (typeof readOnly === "boolean") {
+      updates.activeConnectionReadOnly = readOnly;
+    }
+
+    store.setState(updates);
+  } catch (error) {
+    if (requestToken !== collectionsRequestSequence) {
+      return;
+    }
+
+    store.setState({
+      collectionsStatus: "error",
+      collectionsError:
+        (error && error.message) || "Failed to load collections for this connection.",
+      activeConnectionCollections: [],
+      activeConnectionReadOnly: null,
+    });
   }
 }
 
@@ -810,6 +962,10 @@ const initialState = {
   connections: [], // Array of MongoDB connections
   currentForm: null, // State for tracking the current form (edit or add)
   activeConnectionId: null,
+  activeConnectionCollections: [],
+  collectionsStatus: "idle",
+  collectionsError: null,
+  activeConnectionReadOnly: null,
 };
 
 // Create the store
@@ -989,6 +1145,7 @@ const actions = {
     }
 
     return {
+      ...state,
       connections,
       currentForm: null,
       activeConnectionId,
@@ -1024,6 +1181,7 @@ const actions = {
     });
 
     return {
+      ...state,
       connections,
       currentForm: null,
       activeConnectionId,
@@ -1043,6 +1201,7 @@ const actions = {
       );
 
     return {
+      ...state,
       connections,
       activeConnectionId: wasActive ? null : state.activeConnectionId,
     };
@@ -1252,6 +1411,113 @@ function renderConnections(connections, activeConnectionId) {
     listItem.appendChild(controls);
     list.appendChild(listItem);
   });
+}
+
+function getCollectionsStatusElement() {
+  return document.getElementById(COLLECTIONS_STATUS_ELEMENT_ID);
+}
+
+function getCollectionsListElement() {
+  return document.getElementById(COLLECTIONS_LIST_ELEMENT_ID);
+}
+
+function renderCollectionsSection(state) {
+  const statusElement = getCollectionsStatusElement();
+  const listElement = getCollectionsListElement();
+
+  if (!statusElement || !listElement) {
+    return;
+  }
+
+  const {
+    activeConnectionId,
+    collectionsStatus,
+    collectionsError,
+    activeConnectionCollections,
+    activeConnectionReadOnly,
+  } = state;
+
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === activeConnectionId)
+    : null;
+
+  listElement.innerHTML = "";
+  listElement.classList.add("hidden");
+
+  if (!activeConnection) {
+    statusElement.textContent = "Select a connection to load collections.";
+    statusElement.className = "text-sm text-gray-500";
+    return;
+  }
+
+  if (collectionsStatus === "loading") {
+    statusElement.textContent = "Loading collections...";
+    statusElement.className = "text-sm text-sky-600";
+    return;
+  }
+
+  if (collectionsStatus === "error") {
+    const message = collectionsError || "Failed to load collections.";
+    statusElement.textContent = message;
+    statusElement.className = "text-sm text-red-600";
+    return;
+  }
+
+  const accessDescriptor =
+    typeof activeConnectionReadOnly === "boolean"
+      ? activeConnectionReadOnly
+        ? "read-only"
+        : "read/write"
+      : null;
+
+  if (!Array.isArray(activeConnectionCollections) || activeConnectionCollections.length === 0) {
+    const baseMessage = `No collections found for ${activeConnection.name || "this connection"}.`;
+    statusElement.textContent = accessDescriptor
+      ? `${baseMessage} (${accessDescriptor}).`
+      : baseMessage;
+    statusElement.className = "text-sm text-gray-500";
+    return;
+  }
+
+  const intro = accessDescriptor
+    ? `Collections for ${activeConnection.name || "the active connection"} (${accessDescriptor}).`
+    : `Collections for ${activeConnection.name || "the active connection"}.`;
+  statusElement.textContent = intro;
+  statusElement.className = "text-sm text-gray-600";
+
+  activeConnectionCollections.forEach((name) => {
+    const item = document.createElement("li");
+    item.className = "rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-gray-700";
+    item.textContent = name;
+    listElement.appendChild(item);
+  });
+
+  listElement.classList.remove("hidden");
+}
+
+function normalizeCollectionsList(collections) {
+  if (!Array.isArray(collections)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const normalized = [];
+
+  collections.forEach((name) => {
+    if (typeof name !== "string") {
+      return;
+    }
+
+    const trimmed = name.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  });
+
+  return normalized.sort((a, b) => a.localeCompare(b));
 }
 
 // Render the form for editing or adding a connection
@@ -1517,7 +1783,19 @@ function renderForm(formState) {
 
           const parsedOutput = successfulAttempt ? successfulAttempt.parsedOutput : null;
           const successMessage = parsedOutput && typeof parsedOutput.ok !== "undefined"
-            ? `Successfully connected (ok=${parsedOutput.ok}).`
+            ? (() => {
+                const accessDescriptor =
+                  typeof parsedOutput.readOnly === "boolean"
+                    ? parsedOutput.readOnly
+                      ? "read-only"
+                      : "read/write"
+                    : typeof parsedOutput.accessLevel === "string"
+                    ? parsedOutput.accessLevel.trim()
+                    : "";
+
+                const suffix = accessDescriptor ? `, ${accessDescriptor}` : "";
+                return `Successfully connected (ok=${parsedOutput.ok}${suffix}).`;
+              })()
             : "Successfully connected using the MongoDB Node.js driver.";
 
           if (testResultElement) {
@@ -1784,7 +2062,27 @@ document.getElementById("add-new-button").addEventListener("click", () => {
 store.subscribe((state) => {
   renderConnections(state.connections, state.activeConnectionId);
   renderForm(state.currentForm);
-  saveConnections(); // Automatically save on any state change
+  renderCollectionsSection(state);
+
+  if (state.connections !== lastConnectionsSnapshot) {
+    lastConnectionsSnapshot = state.connections;
+    saveConnections();
+  }
+
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === state.activeConnectionId)
+    : null;
+  const activeSignature = activeConnection
+    ? `${activeConnection.id}:${activeConnection.uri || ""}`
+    : null;
+
+  if (activeSignature !== lastActiveConnectionSignature) {
+    lastActiveConnectionSignature = activeSignature;
+
+    loadCollectionsForActiveConnection().catch((error) => {
+      console.error("Failed to load collections for the active connection:", error);
+    });
+  }
 
   if (state.activeConnectionId !== lastActiveConnectionId) {
     lastActiveConnectionId = state.activeConnectionId;
