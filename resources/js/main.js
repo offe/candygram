@@ -3,7 +3,7 @@
 // Feel free to use any frontend framework you like :)
 // See more details: https://neutralino.js.org/docs/how-to/use-a-frontend-library
 
-const MENU_EVENT_NAME = "candygram:menu-action";
+const MENU_EVENT_CHANNEL = "candygram:menu-action";
 const MENU_ITEM_IDS = {
   QUIT: "menu:candygram:quit",
   CUT: "menu:edit:cut",
@@ -83,7 +83,7 @@ function dispatchMenuAction(actionId) {
   }
 
   document.dispatchEvent(
-    new CustomEvent(MENU_EVENT_NAME, {
+    new CustomEvent(MENU_EVENT_CHANNEL, {
       detail: { id: actionId },
     })
   );
@@ -130,7 +130,6 @@ function registerNativeMenuEvents(preferredEventNames) {
 }
 
 async function setApplicationMenu() {
-  console.log("setApplicationMenu");
 
   if (NL_MODE != "window") {
     console.log("INFO: Application menu is only available in the window mode.");
@@ -258,7 +257,7 @@ async function setApplicationMenu() {
     }
   }
 
-  console.warn("INFO: Native menu support is unavailable in this build.");
+  console.info("INFO: Native menu support is unavailable in this build.");
 
   return { applied: false, source: null };
 }
