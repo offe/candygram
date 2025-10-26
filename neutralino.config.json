@@ -15,6 +15,7 @@
   },
   "nativeAllowList": [
     "os.*",
+    "window.*",
     "filesystem.readFile",
     "filesystem.writeFile",
     "clipboard.*",

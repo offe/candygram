@@ -18,6 +18,35 @@ const NATIVE_MENU_EVENT_CANDIDATES = [
   "appMenuItemClicked",
 ];
 
+const MENU_SOURCE_EVENT_MAP = {
+  windowSetMenu: ["windowMenuItemClicked"],
+  windowCreateMenu: ["windowMenuItemClicked"],
+  osSetMenu: ["menuItemClicked", "appMenuItemClicked", "windowMenuItemClicked"],
+};
+
+const registeredMenuEventNames = new Set();
+
+function safeDescribeMenuPayload(payload) {
+  try {
+    return JSON.stringify(payload);
+  } catch (error) {
+    return "[unserializable menu payload]";
+  }
+}
+
+function resolveMenuEventNames(menuResult) {
+  if (
+    menuResult &&
+    menuResult.applied &&
+    menuResult.source &&
+    MENU_SOURCE_EVENT_MAP[menuResult.source]
+  ) {
+    return MENU_SOURCE_EVENT_MAP[menuResult.source];
+  }
+
+  return NATIVE_MENU_EVENT_CANDIDATES;
+}
+
 const MENU_ACTION_IDS = new Set(Object.values(MENU_ITEM_IDS));
 
 /*
@@ -60,7 +89,7 @@ function dispatchMenuAction(actionId) {
   );
 }
 
-function registerNativeMenuEvents() {
+function registerNativeMenuEvents(preferredEventNames) {
   if (
     !Neutralino ||
     !Neutralino.events ||
@@ -69,7 +98,15 @@ function registerNativeMenuEvents() {
     return;
   }
 
-  NATIVE_MENU_EVENT_CANDIDATES.forEach((eventName) => {
+  const candidateNames = Array.isArray(preferredEventNames)
+    ? preferredEventNames
+    : NATIVE_MENU_EVENT_CANDIDATES;
+
+  candidateNames.forEach((eventName) => {
+    if (registeredMenuEventNames.has(eventName)) {
+      return;
+    }
+
     Neutralino.events.on(eventName, (event) => {
       let candidateId = null;
 
@@ -87,24 +124,17 @@ function registerNativeMenuEvents() {
 
       dispatchMenuAction(candidateId);
     });
+
+    registeredMenuEventNames.add(eventName);
   });
 }
 
-function setApplicationMenu() {
+async function setApplicationMenu() {
   console.log("setApplicationMenu");
 
   if (NL_MODE != "window") {
     console.log("INFO: Application menu is only available in the window mode.");
-    return;
-  }
-
-  if (
-    !Neutralino ||
-    !Neutralino.os ||
-    typeof Neutralino.os.setMenu !== "function"
-  ) {
-    console.warn("INFO: Native menu support is unavailable in this build.");
-    return;
+    return { applied: false, source: null };
   }
 
   const candygramItems = [
@@ -135,11 +165,102 @@ function setApplicationMenu() {
     },
   ];
 
-  Neutralino.os
-    .setMenu({ menuItems, menu: menuItems })
-    .catch((error) => {
-      console.error("Failed to set application menu:", error);
-    });
+  const menuSetterCandidates = [
+    {
+      name: "Neutralino.window.setMenu",
+      resolve() {
+        if (
+          Neutralino &&
+          Neutralino.window &&
+          typeof Neutralino.window.setMenu === "function"
+        ) {
+          return Neutralino.window.setMenu.bind(Neutralino.window);
+        }
+
+        return null;
+      },
+      payloads: () => [
+        { menuItems },
+        { menu: menuItems },
+        { menuItems, menu: menuItems },
+      ],
+      sourceKey: "windowSetMenu",
+    },
+    {
+      name: "Neutralino.window.createMenu",
+      resolve() {
+        if (
+          Neutralino &&
+          Neutralino.window &&
+          typeof Neutralino.window.createMenu === "function"
+        ) {
+          return Neutralino.window.createMenu.bind(Neutralino.window);
+        }
+
+        return null;
+      },
+      payloads: () => [
+        menuItems,
+        { items: menuItems },
+        { menuItems },
+        { menuItems, menu: menuItems },
+      ],
+      sourceKey: "windowCreateMenu",
+    },
+    {
+      name: "Neutralino.os.setMenu",
+      resolve() {
+        if (Neutralino && Neutralino.os && typeof Neutralino.os.setMenu === "function") {
+          return Neutralino.os.setMenu.bind(Neutralino.os);
+        }
+
+        return null;
+      },
+      payloads: () => [
+        { menuItems },
+        { menu: menuItems },
+        { menuItems, menu: menuItems },
+      ],
+      sourceKey: "osSetMenu",
+    },
+  ];
+
+  for (const candidate of menuSetterCandidates) {
+    const setter = candidate.resolve();
+
+    if (!setter) {
+      continue;
+    }
+
+    const payloadVariants = candidate.payloads();
+
+    for (const variant of payloadVariants) {
+      try {
+        const result = setter(variant);
+
+        if (result && typeof result.then === "function") {
+          await result;
+        }
+
+        console.log(
+          `INFO: Application menu configured via ${candidate.name}.`
+        );
+
+        return { applied: true, source: candidate.sourceKey };
+      } catch (error) {
+        console.warn(
+          `Failed to apply native menu via ${candidate.name} using payload ${safeDescribeMenuPayload(
+            variant
+          )}:`,
+          error
+        );
+      }
+    }
+  }
+
+  console.warn("INFO: Native menu support is unavailable in this build.");
+
+  return { applied: false, source: null };
 }
 
 /*
@@ -199,7 +320,6 @@ function onWindowClose() {
 
 // Initialize Neutralino
 Neutralino.init();
-registerNativeMenuEvents();
 
 // Register event listeners
 Neutralino.events.on("trayMenuItemClicked", onTrayMenuItemClicked);
@@ -207,10 +327,22 @@ Neutralino.events.on("windowClose", onWindowClose);
 
 // Conditional initialization: Use the system tray on non-macOS systems
 // and prefer the native menu where available.
-if (NL_OS === "Darwin") {
-  setApplicationMenu();
-} else {
+const menuInitialization = (async () => {
+  if (NL_OS === "Darwin") {
+    return setApplicationMenu();
+  }
+
   // TODO: Fix https://github.com/neutralinojs/neutralinojs/issues/615
   setTray();
-  setApplicationMenu();
-}
+
+  return setApplicationMenu();
+})();
+
+menuInitialization
+  .then((menuResult) => {
+    registerNativeMenuEvents(resolveMenuEventNames(menuResult));
+  })
+  .catch((error) => {
+    console.error("Failed to initialize native menus:", error);
+    registerNativeMenuEvents();
+  });
