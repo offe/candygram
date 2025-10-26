@@ -62,14 +62,19 @@ async function main() {
     await client.connect();
     const db = client.db();
 
-    const collections = await db
-      .listCollections({}, { nameOnly: true })
+    const collectionInfos = await db
+      .listCollections({}, { nameOnly: false })
       .toArray()
       .then((colls) =>
-        colls
-          .map((coll) => coll.name)
-          .filter((name) => typeof name === 'string' && !name.startsWith('system.'))
+        colls.filter((coll) =>
+          coll &&
+          typeof coll.name === 'string' &&
+          !coll.name.startsWith('system.') &&
+          (coll.type === undefined || coll.type === 'collection')
+        )
       );
+
+    const collections = collectionInfos.map((coll) => coll.name);
 
     if (!collections || collections.length === 0) {
       console.log(JSON.stringify({ status: 'no_collections', matches: [] }));
@@ -77,45 +82,32 @@ async function main() {
       return;
     }
 
-    const [firstCollection, ...remainingCollections] = collections;
+    const matches = [];
 
-    const basePipeline = [
-      { $match: { _id: targetId } },
-      { $addFields: { __collection: firstCollection } },
-    ];
+    for (const collectionName of collections) {
+      try {
+        const document = await db.collection(collectionName).findOne({ _id: targetId });
+        if (document) {
+          matches.push({
+            collection: collectionName,
+            document,
+          });
+        }
+      } catch (collectionError) {
+        const message = collectionError && collectionError.stack
+          ? collectionError.stack
+          : String(collectionError);
+        console.error(
+          `Failed to query collection "${collectionName}": ${message}`
+        );
+      }
+    }
 
-    const unionStages = remainingCollections.flatMap((collectionName) => [
-      {
-        $unionWith: {
-          coll: collectionName,
-          pipeline: [
-            { $match: { _id: targetId } },
-            { $addFields: { __collection: collectionName } },
-          ],
-        },
-      },
-    ]);
-
-    const cursor = db.collection(firstCollection).aggregate([
-      ...basePipeline,
-      ...unionStages,
-    ]);
-
-    const documents = await cursor.toArray();
-
-    if (!documents || documents.length === 0) {
+    if (matches.length === 0) {
       console.log(JSON.stringify({ status: 'not_found', matches: [] }));
       process.exit(0);
       return;
     }
-
-    const matches = documents.map((doc) => {
-      const { __collection: collection, ...rest } = doc;
-      return {
-        collection,
-        document: rest,
-      };
-    });
 
     console.log(
       JSON.stringify({ status: 'found', matches }, (_, value) => {
