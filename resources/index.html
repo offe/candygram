@@ -132,38 +132,67 @@
                       aria-labelledby="lookup-tab-objectid"
                       class="space-y-3"
                     >
-                      <div
-                        class="flex w-full flex-col gap-2 sm:flex-row sm:items-center"
-                      >
-                        <input
-                          id="objectid-input"
-                          type="text"
-                          inputmode="text"
-                          autocomplete="off"
-                          spellcheck="false"
-                          placeholder="Enter a MongoDB ObjectId"
-                          class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                          aria-describedby="clipboard-status"
-                        />
+                      <div class="space-y-2">
                         <label
-                          for="clipboard-scan-toggle"
-                          class="flex cursor-pointer items-center gap-2 text-sm text-gray-700"
+                          for="objectid-input"
+                          class="block text-sm font-medium text-gray-700"
+                        >
+                          ObjectId
+                        </label>
+                        <div
+                          class="flex w-full flex-col gap-2 sm:flex-row sm:items-end sm:gap-3"
                         >
                           <input
-                            id="clipboard-scan-toggle"
-                            type="checkbox"
-                            class="h-4 w-4 rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+                            id="objectid-input"
+                            type="text"
+                            inputmode="text"
+                            autocomplete="off"
+                            spellcheck="false"
+                            placeholder="Enter a MongoDB ObjectId"
+                            class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
+                            aria-describedby="clipboard-status"
                           />
-                          <span>Watch clipboard</span>
-                        </label>
+                          <button
+                            id="objectid-run-button"
+                            type="button"
+                            class="inline-flex items-center justify-center rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+                          >
+                            Run
+                          </button>
+                          <label
+                            for="clipboard-scan-toggle"
+                            class="flex cursor-pointer items-center gap-2 text-sm text-gray-700 sm:self-center"
+                          >
+                            <input
+                              id="clipboard-scan-toggle"
+                              type="checkbox"
+                              class="h-4 w-4 rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+                            />
+                            <span>Watch clipboard</span>
+                          </label>
+                        </div>
                       </div>
                       <p class="text-xs text-gray-500">
-                        Press Enter or rely on clipboard watching to run the lookup.
+                        Press Enter or click Run, or enable clipboard watching to run the lookup.
                       </p>
-                      <pre
-                        id="lookup-output-objectid"
-                        class="hidden max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-800"
-                      ></pre>
+                      <div
+                        id="lookup-output-objectid-container"
+                        class="hidden space-y-2"
+                      >
+                        <div
+                          class="flex items-center justify-between text-xs text-gray-600"
+                        >
+                          <span id="lookup-output-objectid-count"></span>
+                          <div
+                            id="lookup-output-objectid-actions"
+                            class="flex items-center gap-1"
+                          ></div>
+                        </div>
+                        <pre
+                          id="lookup-output-objectid"
+                          class="hidden max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-800"
+                        ></pre>
+                      </div>
                     </section>
                     <section
                       id="lookup-panel-find"
@@ -173,48 +202,42 @@
                       class="hidden space-y-4"
                       tabindex="-1"
                     >
-                      <div class="space-y-1">
+                      <div
+                        class="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3"
+                      >
                         <label
-                          for="find-collection-select"
-                          class="block text-sm font-medium text-gray-700"
+                          class="flex flex-1 flex-col gap-1 text-sm text-gray-700"
                         >
-                          Collection
-                        </label>
-                        <div
-                          class="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3"
-                        >
+                          <span class="font-medium text-gray-700">Collection</span>
                           <select
                             id="find-collection-select"
-                            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 sm:flex-1"
+                            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
                           >
                             <option value="">Select a collection</option>
                           </select>
-                          <div class="flex flex-col gap-1 sm:w-32">
-                            <label
-                              for="find-limit-input"
-                              class="text-sm font-medium text-gray-700"
-                            >
-                              Result limit
-                            </label>
-                            <input
-                              id="find-limit-input"
-                              type="number"
-                              min="1"
-                              max="200"
-                              step="1"
-                              value="20"
-                              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                            />
-                          </div>
-                          <button
-                            id="find-run-button"
-                            type="button"
-                            class="inline-flex items-center justify-center rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-gray-300 sm:self-end"
-                            disabled
-                          >
-                            Run
-                          </button>
-                        </div>
+                        </label>
+                        <label
+                          class="flex flex-col gap-1 text-sm text-gray-700 sm:w-32"
+                        >
+                          <span class="font-medium text-gray-700">Result limit</span>
+                          <input
+                            id="find-limit-input"
+                            type="number"
+                            min="1"
+                            max="200"
+                            step="1"
+                            value="20"
+                            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                          />
+                        </label>
+                        <button
+                          id="find-run-button"
+                          type="button"
+                          class="inline-flex items-center justify-center rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-gray-300 sm:self-end"
+                          disabled
+                        >
+                          Run
+                        </button>
                       </div>
                       <div class="space-y-1">
                         <label
@@ -235,10 +258,24 @@
                           aria-live="polite"
                         ></p>
                       </div>
-                      <pre
-                        id="lookup-output-find"
-                        class="hidden max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-800"
-                      ></pre>
+                      <div
+                        id="lookup-output-find-container"
+                        class="hidden space-y-2"
+                      >
+                        <div
+                          class="flex items-center justify-between text-xs text-gray-600"
+                        >
+                          <span id="lookup-output-find-count"></span>
+                          <div
+                            id="lookup-output-find-actions"
+                            class="flex items-center gap-1"
+                          ></div>
+                        </div>
+                        <pre
+                          id="lookup-output-find"
+                          class="hidden max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-800"
+                        ></pre>
+                      </div>
                     </section>
                     <section
                       id="lookup-panel-aggregate"
@@ -248,48 +285,42 @@
                       class="hidden space-y-4"
                       tabindex="-1"
                     >
-                      <div class="space-y-1">
+                      <div
+                        class="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3"
+                      >
                         <label
-                          for="aggregate-collection-select"
-                          class="block text-sm font-medium text-gray-700"
+                          class="flex flex-1 flex-col gap-1 text-sm text-gray-700"
                         >
-                          Collection
-                        </label>
-                        <div
-                          class="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3"
-                        >
+                          <span class="font-medium text-gray-700">Collection</span>
                           <select
                             id="aggregate-collection-select"
-                            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 sm:flex-1"
+                            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
                           >
                             <option value="">Select a collection</option>
                           </select>
-                          <div class="flex flex-col gap-1 sm:w-32">
-                            <label
-                              for="aggregate-limit-input"
-                              class="text-sm font-medium text-gray-700"
-                            >
-                              Result limit
-                            </label>
-                            <input
-                              id="aggregate-limit-input"
-                              type="number"
-                              min="1"
-                              max="200"
-                              step="1"
-                              value="20"
-                              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                            />
-                          </div>
-                          <button
-                            id="aggregate-run-button"
-                            type="button"
-                            class="inline-flex items-center justify-center rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-gray-300 sm:self-end"
-                            disabled
-                          >
-                            Run
-                          </button>
-                        </div>
+                        </label>
+                        <label
+                          class="flex flex-col gap-1 text-sm text-gray-700 sm:w-32"
+                        >
+                          <span class="font-medium text-gray-700">Result limit</span>
+                          <input
+                            id="aggregate-limit-input"
+                            type="number"
+                            min="1"
+                            max="200"
+                            step="1"
+                            value="20"
+                            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                          />
+                        </label>
+                        <button
+                          id="aggregate-run-button"
+                          type="button"
+                          class="inline-flex items-center justify-center rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-gray-300 sm:self-end"
+                          disabled
+                        >
+                          Run
+                        </button>
                       </div>
                       <div class="space-y-1">
                         <label
@@ -310,10 +341,24 @@
                           aria-live="polite"
                         ></p>
                       </div>
-                      <pre
-                        id="lookup-output-aggregate"
-                        class="hidden max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-800"
-                      ></pre>
+                      <div
+                        id="lookup-output-aggregate-container"
+                        class="hidden space-y-2"
+                      >
+                        <div
+                          class="flex items-center justify-between text-xs text-gray-600"
+                        >
+                          <span id="lookup-output-aggregate-count"></span>
+                          <div
+                            id="lookup-output-aggregate-actions"
+                            class="flex items-center gap-1"
+                          ></div>
+                        </div>
+                        <pre
+                          id="lookup-output-aggregate"
+                          class="hidden max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-800"
+                        ></pre>
+                      </div>
                     </section>
                   </div>
                 </div>

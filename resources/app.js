@@ -32,6 +32,7 @@ const MENU_ACTION_MAP = {
 
 const CLIPBOARD_STATUS_ELEMENT_ID = "clipboard-status";
 const OBJECT_ID_INPUT_ELEMENT_ID = "objectid-input";
+const OBJECT_ID_RUN_BUTTON_ID = "objectid-run-button";
 const CLIPBOARD_SCAN_TOGGLE_ELEMENT_ID = "clipboard-scan-toggle";
 const COLLECTIONS_STATUS_ELEMENT_ID = "collections-status";
 const COLLECTIONS_LIST_ELEMENT_ID = "collections-list";
@@ -65,6 +66,30 @@ const LOOKUP_OUTPUT_ELEMENT_IDS = {
   [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid",
   [LOOKUP_MODES.FIND]: "lookup-output-find",
   [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate",
+};
+
+const LOOKUP_OUTPUT_CONTAINER_IDS = {
+  [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid-container",
+  [LOOKUP_MODES.FIND]: "lookup-output-find-container",
+  [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate-container",
+};
+
+const LOOKUP_OUTPUT_COUNT_IDS = {
+  [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid-count",
+  [LOOKUP_MODES.FIND]: "lookup-output-find-count",
+  [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate-count",
+};
+
+const LOOKUP_OUTPUT_ACTION_CONTAINER_IDS = {
+  [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid-actions",
+  [LOOKUP_MODES.FIND]: "lookup-output-find-actions",
+  [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate-actions",
+};
+
+const LOOKUP_OUTPUT_COPY_BUTTON_IDS = {
+  [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid-copy",
+  [LOOKUP_MODES.FIND]: "lookup-output-find-copy",
+  [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate-copy",
 };
 
 const DEFAULT_FIND_LIMIT = 20;
@@ -420,6 +445,7 @@ let clipboardLookupSequence = 0;
 let lastActiveConnectionId = null;
 let isClipboardScanEnabled = CLIPBOARD_MONITORING_ENABLED;
 let objectIdInputValue = "";
+let isObjectIdRunInFlight = false;
 let collectionsRequestSequence = 0;
 let lastConnectionsSnapshot = null;
 let lastActiveConnectionSignature = null;
@@ -447,6 +473,12 @@ const aggregateModeState = {
 
 let lastLookupCollectionsSignature = null;
 
+const lookupResultAvailability = {
+  [LOOKUP_MODES.OBJECT_ID]: false,
+  [LOOKUP_MODES.FIND]: false,
+  [LOOKUP_MODES.AGGREGATE]: false,
+};
+
 function getClipboardStatusElement() {
   return document.getElementById(CLIPBOARD_STATUS_ELEMENT_ID);
 }
@@ -458,6 +490,112 @@ function getClipboardOutputElement(mode = activeLookupMode) {
   }
 
   return document.getElementById(elementId);
+}
+
+function getLookupOutputContainer(mode = activeLookupMode) {
+  const containerId = LOOKUP_OUTPUT_CONTAINER_IDS[mode] || null;
+  if (!containerId) {
+    return null;
+  }
+
+  return document.getElementById(containerId);
+}
+
+function getLookupResultCountElement(mode = activeLookupMode) {
+  const countId = LOOKUP_OUTPUT_COUNT_IDS[mode] || null;
+  if (!countId) {
+    return null;
+  }
+
+  return document.getElementById(countId);
+}
+
+function getLookupOutputActionContainer(mode = activeLookupMode) {
+  const actionContainerId = LOOKUP_OUTPUT_ACTION_CONTAINER_IDS[mode] || null;
+  if (!actionContainerId) {
+    return null;
+  }
+
+  return document.getElementById(actionContainerId);
+}
+
+function getLookupCopyButton(mode = activeLookupMode) {
+  const buttonId = LOOKUP_OUTPUT_COPY_BUTTON_IDS[mode] || null;
+  if (!buttonId) {
+    return null;
+  }
+
+  return document.getElementById(buttonId);
+}
+
+function setLookupResultAvailability(mode = activeLookupMode, hasResult = false) {
+  const normalizedMode = Object.values(LOOKUP_MODES).includes(mode)
+    ? mode
+    : activeLookupMode;
+
+  lookupResultAvailability[normalizedMode] = Boolean(hasResult);
+
+  const copyButton = getLookupCopyButton(normalizedMode);
+  if (copyButton) {
+    const disabled = !lookupResultAvailability[normalizedMode];
+    copyButton.disabled = disabled;
+    copyButton.setAttribute("aria-disabled", disabled ? "true" : "false");
+  }
+}
+
+function formatDocumentCount(count) {
+  if (!Number.isFinite(count)) {
+    return "";
+  }
+
+  const normalized = Math.max(0, Math.trunc(count));
+  const noun = normalized === 1 ? "document" : "documents";
+  return `${normalized} ${noun} found`;
+}
+
+function setLookupDocumentCount(
+  mode = activeLookupMode,
+  count = null,
+  { customLabel = null } = {},
+) {
+  const countElement = getLookupResultCountElement(mode);
+  if (!countElement) {
+    return;
+  }
+
+  if (typeof customLabel === "string") {
+    countElement.textContent = customLabel;
+    return;
+  }
+
+  if (typeof count === "number" && Number.isFinite(count)) {
+    countElement.textContent = formatDocumentCount(count);
+  } else {
+    countElement.textContent = "";
+  }
+}
+
+async function copyLookupOutput(mode = activeLookupMode) {
+  const normalizedMode = Object.values(LOOKUP_MODES).includes(mode)
+    ? mode
+    : activeLookupMode;
+
+  const hasResult = lookupResultAvailability[normalizedMode];
+  const outputElement = getClipboardOutputElement(normalizedMode);
+
+  if (!hasResult || !outputElement) {
+    updateClipboardMessage("No results available to copy.", "warning");
+    return;
+  }
+
+  const text = outputElement.textContent || "";
+  if (!text.trim()) {
+    updateClipboardMessage("Result is empty; nothing to copy.", "warning");
+    return;
+  }
+
+  await handleClipboardWrite(text);
+  updateClipboardMessage("Results copied to clipboard.", "success");
 }
 
 function updateClipboardMessage(message, tone = "info") {
@@ -473,27 +611,23 @@ function updateClipboardMessage(message, tone = "info") {
 
 function clearClipboardOutput(mode = activeLookupMode) {
   const outputElement = getClipboardOutputElement(mode);
-  if (!outputElement) {
-    return;
+  if (outputElement) {
+    outputElement.textContent = "";
+    outputElement.classList.add("hidden");
   }
 
-  outputElement.textContent = "";
-  outputElement.classList.add("hidden");
+  const container = getLookupOutputContainer(mode);
+  if (container) {
+    container.classList.add("hidden");
+  }
+
+  setLookupDocumentCount(mode, null);
+  setLookupResultAvailability(mode, false);
 }
 
 function clearAllLookupOutputs() {
-  Object.values(LOOKUP_OUTPUT_ELEMENT_IDS).forEach((elementId) => {
-    if (!elementId) {
-      return;
-    }
-
-    const element = document.getElementById(elementId);
-    if (!element) {
-      return;
-    }
-
-    element.textContent = "";
-    element.classList.add("hidden");
+  Object.values(LOOKUP_MODES).forEach((mode) => {
+    clearClipboardOutput(mode);
   });
 }
 
@@ -503,6 +637,48 @@ function getObjectIdInputElement() {
 
 function getClipboardScanToggleElement() {
   return document.getElementById(CLIPBOARD_SCAN_TOGGLE_ELEMENT_ID);
+}
+
+function getObjectIdRunButtonElement() {
+  return document.getElementById(OBJECT_ID_RUN_BUTTON_ID);
+}
+
+function updateObjectIdControlsState() {
+  const input = getObjectIdInputElement();
+  const runButton = getObjectIdRunButtonElement();
+  const watching = isClipboardWatcherActive();
+  const hasValue = Boolean(objectIdInputValue && objectIdInputValue.trim());
+  const busy = Boolean(isObjectIdRunInFlight);
+
+  if (input) {
+    input.disabled = watching;
+    if (watching) {
+      input.setAttribute("aria-disabled", "true");
+      input.setAttribute(
+        "title",
+        "Disable clipboard watching to edit the ObjectId manually.",
+      );
+    } else {
+      input.removeAttribute("aria-disabled");
+      input.removeAttribute("title");
+    }
+  }
+
+  if (runButton) {
+    const shouldDisable = watching || !hasValue || busy;
+    runButton.disabled = shouldDisable;
+    runButton.setAttribute("aria-disabled", shouldDisable ? "true" : "false");
+
+    if (watching) {
+      runButton.title = "Disable clipboard watching to run manually.";
+    } else if (!hasValue) {
+      runButton.title = "Enter an ObjectId to run the lookup.";
+    } else if (busy) {
+      runButton.title = "Running lookup...";
+    } else {
+      runButton.removeAttribute("title");
+    }
+  }
 }
 
 function applyClipboardScanState() {
@@ -525,6 +701,8 @@ function applyClipboardScanState() {
   if (input) {
     input.setAttribute("aria-live", "polite");
   }
+
+  updateObjectIdControlsState();
 }
 
 function isClipboardWatcherActive() {
@@ -566,13 +744,15 @@ function setObjectIdInputValue(value, { fromClipboard = false } = {}) {
   } else if (input) {
     input.dataset.lastSource = "input";
   }
+
+  updateObjectIdControlsState();
 }
 
 function getLookupIdleMessage() {
   if (activeLookupMode === LOOKUP_MODES.OBJECT_ID) {
     return isClipboardWatcherActive()
       ? "Copy a MongoDB ObjectId to search the active connection."
-      : "Enter a MongoDB ObjectId to search the active connection.";
+      : "Enter a MongoDB ObjectId and press Enter or Run to search the active connection.";
   }
 
   if (activeLookupMode === LOOKUP_MODES.FIND) {
@@ -603,6 +783,14 @@ function renderLookupLoadingMessage(message, mode = activeLookupMode) {
 
   outputElement.textContent = message || "Running lookup...";
   outputElement.classList.remove("hidden");
+
+  const container = getLookupOutputContainer(mode);
+  if (container) {
+    container.classList.remove("hidden");
+  }
+
+  setLookupDocumentCount(mode, null);
+  setLookupResultAvailability(mode, false);
 }
 
 function renderClipboardLoading(objectId) {
@@ -612,7 +800,7 @@ function renderClipboardLoading(objectId) {
   );
 }
 
-function renderJsonResult(value, mode = activeLookupMode) {
+function renderJsonResult(value, mode = activeLookupMode, documentCount = null) {
   const outputElement = getClipboardOutputElement(mode);
   if (!outputElement) {
     return;
@@ -621,6 +809,19 @@ function renderJsonResult(value, mode = activeLookupMode) {
   try {
     outputElement.textContent = JSON.stringify(value, null, 2);
     outputElement.classList.remove("hidden");
+
+    const container = getLookupOutputContainer(mode);
+    if (container) {
+      container.classList.remove("hidden");
+    }
+
+    if (typeof documentCount === "number" && Number.isFinite(documentCount)) {
+      setLookupDocumentCount(mode, documentCount);
+    } else {
+      setLookupDocumentCount(mode, null);
+    }
+
+    setLookupResultAvailability(mode, true);
   } catch (error) {
     console.error("Failed to render JSON result:", error);
     clearClipboardOutput(mode);
@@ -637,7 +838,7 @@ function renderClipboardMatches(matches) {
     const match = matches[0] || {};
     const documentForDisplay =
       match && typeof match === "object" && match.document ? match.document : {};
-    renderJsonResult(documentForDisplay, LOOKUP_MODES.OBJECT_ID);
+    renderJsonResult(documentForDisplay, LOOKUP_MODES.OBJECT_ID, 1);
     return;
   }
 
@@ -654,7 +855,7 @@ function renderClipboardMatches(matches) {
     grouped[collectionName] = match.document || null;
   });
 
-  renderJsonResult(grouped, LOOKUP_MODES.OBJECT_ID);
+  renderJsonResult(grouped, LOOKUP_MODES.OBJECT_ID, matches.length);
 }
 
 function updateParseErrorMessage(elementId, message) {
@@ -1018,6 +1219,53 @@ function setButtonBusy(button, isBusy, busyLabel = "Running…") {
   }
 }
 
+function setupLookupOutputCopyButtons() {
+  Object.values(LOOKUP_MODES).forEach((mode) => {
+    const actionContainer = getLookupOutputActionContainer(mode);
+    if (!actionContainer) {
+      return;
+    }
+
+    const copyButtonId = LOOKUP_OUTPUT_COPY_BUTTON_IDS[mode];
+    if (copyButtonId && document.getElementById(copyButtonId)) {
+      return;
+    }
+
+    const copyButton = createIconButton({
+      iconName: "FaRegClipboard",
+      ariaLabel: "Copy results to clipboard",
+      buttonClass:
+        "text-gray-500 hover:text-gray-700 hover:bg-gray-100 focus:ring-sky-500 disabled:cursor-not-allowed disabled:text-gray-300",
+      iconClass: "w-4 h-4",
+      fallbackContent: "⧉",
+    });
+
+    if (!copyButton) {
+      return;
+    }
+
+    copyButton.id = copyButtonId;
+    copyButton.disabled = true;
+    copyButton.setAttribute("aria-disabled", "true");
+
+    copyButton.addEventListener("click", () => {
+      copyLookupOutput(mode).catch((error) => {
+        console.error("Failed to copy lookup results:", error);
+        updateClipboardMessage(
+          "Failed to copy results to the clipboard.",
+          "error",
+        );
+      });
+    });
+
+    actionContainer.appendChild(copyButton);
+  });
+
+  Object.values(LOOKUP_MODES).forEach((mode) => {
+    setLookupResultAvailability(mode, lookupResultAvailability[mode]);
+  });
+}
+
 async function executeFindQuery() {
   if (
     findModeState.isRunning ||
@@ -1071,10 +1319,8 @@ async function executeFindQuery() {
 
     if (result.status === "ok" || result.status === "found") {
       updateClipboardMessage("Find query complete.", "success");
-      renderJsonResult(
-        Array.isArray(result.results) ? result.results : [],
-        LOOKUP_MODES.FIND,
-      );
+      const documents = Array.isArray(result.results) ? result.results : [];
+      renderJsonResult(documents, LOOKUP_MODES.FIND, documents.length);
       return;
     }
 
@@ -1160,10 +1406,8 @@ async function executeAggregateQuery() {
 
     if (result.status === "ok" || result.status === "found") {
       updateClipboardMessage("Aggregation complete.", "success");
-      renderJsonResult(
-        Array.isArray(result.results) ? result.results : [],
-        LOOKUP_MODES.AGGREGATE,
-      );
+      const documents = Array.isArray(result.results) ? result.results : [];
+      renderJsonResult(documents, LOOKUP_MODES.AGGREGATE, documents.length);
       return;
     }
 
@@ -2666,6 +2910,7 @@ function renderForm(formState) {
 }
 
 function setupDocumentLookupUi() {
+  setupLookupOutputCopyButtons();
   const tabButtons = getLookupModeButtons();
   tabButtons.forEach((button) => {
     button.addEventListener("click", () => {
@@ -2707,6 +2952,31 @@ function setupDocumentLookupUi() {
       }).catch((error) => {
         console.error("Manual ObjectId lookup failed:", error);
       });
+    });
+  }
+
+  const objectIdRunButton = getObjectIdRunButtonElement();
+  if (objectIdRunButton) {
+    objectIdRunButton.addEventListener("click", () => {
+      if (objectIdRunButton.disabled) {
+        return;
+      }
+
+      isObjectIdRunInFlight = true;
+      setButtonBusy(objectIdRunButton, true);
+      updateObjectIdControlsState();
+
+      handleManualLookupRequest(objectIdInputValue, {
+        showInvalidFeedback: true,
+      })
+        .catch((error) => {
+          console.error("Manual ObjectId lookup failed:", error);
+        })
+        .finally(() => {
+          isObjectIdRunInFlight = false;
+          setButtonBusy(objectIdRunButton, false);
+          updateObjectIdControlsState();
+        });
     });
   }
 
