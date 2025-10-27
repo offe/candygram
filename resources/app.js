@@ -31,7 +31,6 @@ const MENU_ACTION_MAP = {
 };
 
 const CLIPBOARD_STATUS_ELEMENT_ID = "clipboard-status";
-const CLIPBOARD_OUTPUT_ELEMENT_ID = "lookup-output";
 const OBJECT_ID_INPUT_ELEMENT_ID = "objectid-input";
 const CLIPBOARD_SCAN_TOGGLE_ELEMENT_ID = "clipboard-scan-toggle";
 const COLLECTIONS_STATUS_ELEMENT_ID = "collections-status";
@@ -60,6 +59,12 @@ const LOOKUP_MODES = {
   OBJECT_ID: "objectId",
   FIND: "find",
   AGGREGATE: "aggregate",
+};
+
+const LOOKUP_OUTPUT_ELEMENT_IDS = {
+  [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid",
+  [LOOKUP_MODES.FIND]: "lookup-output-find",
+  [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate",
 };
 
 const DEFAULT_FIND_LIMIT = 20;
@@ -446,8 +451,13 @@ function getClipboardStatusElement() {
   return document.getElementById(CLIPBOARD_STATUS_ELEMENT_ID);
 }
 
-function getClipboardOutputElement() {
-  return document.getElementById(CLIPBOARD_OUTPUT_ELEMENT_ID);
+function getClipboardOutputElement(mode = activeLookupMode) {
+  const elementId = LOOKUP_OUTPUT_ELEMENT_IDS[mode] || null;
+  if (!elementId) {
+    return null;
+  }
+
+  return document.getElementById(elementId);
 }
 
 function updateClipboardMessage(message, tone = "info") {
@@ -461,14 +471,30 @@ function updateClipboardMessage(message, tone = "info") {
   element.className = `text-sm ${toneClass}`;
 }
 
-function clearClipboardOutput() {
-  const outputElement = getClipboardOutputElement();
+function clearClipboardOutput(mode = activeLookupMode) {
+  const outputElement = getClipboardOutputElement(mode);
   if (!outputElement) {
     return;
   }
 
   outputElement.textContent = "";
   outputElement.classList.add("hidden");
+}
+
+function clearAllLookupOutputs() {
+  Object.values(LOOKUP_OUTPUT_ELEMENT_IDS).forEach((elementId) => {
+    if (!elementId) {
+      return;
+    }
+
+    const element = document.getElementById(elementId);
+    if (!element) {
+      return;
+    }
+
+    element.textContent = "";
+    element.classList.add("hidden");
+  });
 }
 
 function getObjectIdInputElement() {
@@ -554,7 +580,7 @@ function getLookupIdleMessage() {
   }
 
   if (activeLookupMode === LOOKUP_MODES.AGGREGATE) {
-    return "Select a collection and enter a JSON pipeline to run an aggregation.";
+    return "Provide a JSON pipeline to run the aggregation.";
   }
 
   return "Choose a lookup mode to begin.";
@@ -564,13 +590,13 @@ function updateLookupIdleMessage() {
   updateClipboardMessage(getLookupIdleMessage(), "info");
 }
 
-function renderClipboardIdleState() {
+function renderClipboardIdleState(mode = activeLookupMode) {
   updateLookupIdleMessage();
-  clearClipboardOutput();
+  clearClipboardOutput(mode);
 }
 
-function renderLookupLoadingMessage(message) {
-  const outputElement = getClipboardOutputElement();
+function renderLookupLoadingMessage(message, mode = activeLookupMode) {
+  const outputElement = getClipboardOutputElement(mode);
   if (!outputElement) {
     return;
   }
@@ -582,11 +608,12 @@ function renderLookupLoadingMessage(message) {
 function renderClipboardLoading(objectId) {
   renderLookupLoadingMessage(
     `Running ObjectId lookup for ObjectId(${objectId})...`,
+    LOOKUP_MODES.OBJECT_ID,
   );
 }
 
-function renderJsonResult(value) {
-  const outputElement = getClipboardOutputElement();
+function renderJsonResult(value, mode = activeLookupMode) {
+  const outputElement = getClipboardOutputElement(mode);
   if (!outputElement) {
     return;
   }
@@ -596,13 +623,13 @@ function renderJsonResult(value) {
     outputElement.classList.remove("hidden");
   } catch (error) {
     console.error("Failed to render JSON result:", error);
-    clearClipboardOutput();
+    clearClipboardOutput(mode);
   }
 }
 
 function renderClipboardMatches(matches) {
   if (!Array.isArray(matches) || matches.length === 0) {
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
     return;
   }
 
@@ -610,7 +637,7 @@ function renderClipboardMatches(matches) {
     const match = matches[0] || {};
     const documentForDisplay =
       match && typeof match === "object" && match.document ? match.document : {};
-    renderJsonResult(documentForDisplay);
+    renderJsonResult(documentForDisplay, LOOKUP_MODES.OBJECT_ID);
     return;
   }
 
@@ -627,7 +654,7 @@ function renderClipboardMatches(matches) {
     grouped[collectionName] = match.document || null;
   });
 
-  renderJsonResult(grouped);
+  renderJsonResult(grouped, LOOKUP_MODES.OBJECT_ID);
 }
 
 function updateParseErrorMessage(elementId, message) {
@@ -1033,7 +1060,7 @@ async function executeFindQuery() {
 
   const statusMessage = `Running find on ${findModeState.collection}...`;
   updateClipboardMessage(statusMessage, "info");
-  renderLookupLoadingMessage(statusMessage);
+  renderLookupLoadingMessage(statusMessage, LOOKUP_MODES.FIND);
 
   try {
     const result = await runFindQueryInConnection(activeConnection, {
@@ -1044,30 +1071,33 @@ async function executeFindQuery() {
 
     if (result.status === "ok" || result.status === "found") {
       updateClipboardMessage("Find query complete.", "success");
-      renderJsonResult(Array.isArray(result.results) ? result.results : []);
+      renderJsonResult(
+        Array.isArray(result.results) ? result.results : [],
+        LOOKUP_MODES.FIND,
+      );
       return;
     }
 
     if (result.status === "dependency_missing") {
       updateClipboardMessage(result.message, "error");
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.FIND);
       return;
     }
 
     if (result.status === "invalid" || result.status === "invalid_limit") {
       updateClipboardMessage(result.message || "Find query input is invalid.", "error");
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.FIND);
       return;
     }
 
     updateClipboardMessage(result.message || "Find query failed.", "error");
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.FIND);
   } catch (error) {
     updateClipboardMessage(
       (error && error.message) || "Find query execution failed.",
       "error",
     );
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.FIND);
   } finally {
     findModeState.isRunning = false;
     if (runButton) {
@@ -1119,7 +1149,7 @@ async function executeAggregateQuery() {
 
   const statusMessage = `Running aggregation on ${aggregateModeState.collection}...`;
   updateClipboardMessage(statusMessage, "info");
-  renderLookupLoadingMessage(statusMessage);
+  renderLookupLoadingMessage(statusMessage, LOOKUP_MODES.AGGREGATE);
 
   try {
     const result = await runAggregateQueryInConnection(activeConnection, {
@@ -1130,30 +1160,33 @@ async function executeAggregateQuery() {
 
     if (result.status === "ok" || result.status === "found") {
       updateClipboardMessage("Aggregation complete.", "success");
-      renderJsonResult(Array.isArray(result.results) ? result.results : []);
+      renderJsonResult(
+        Array.isArray(result.results) ? result.results : [],
+        LOOKUP_MODES.AGGREGATE,
+      );
       return;
     }
 
     if (result.status === "dependency_missing") {
       updateClipboardMessage(result.message, "error");
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.AGGREGATE);
       return;
     }
 
     if (result.status === "invalid" || result.status === "invalid_limit") {
       updateClipboardMessage(result.message || "Aggregation input is invalid.", "error");
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.AGGREGATE);
       return;
     }
 
     updateClipboardMessage(result.message || "Aggregation failed.", "error");
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.AGGREGATE);
   } catch (error) {
     updateClipboardMessage(
       (error && error.message) || "Aggregation execution failed.",
       "error",
     );
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.AGGREGATE);
   } finally {
     aggregateModeState.isRunning = false;
     if (runButton) {
@@ -1215,7 +1248,7 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       `Ready to search for ObjectId(${objectId}). Select an active connection first.`,
       "warning",
     );
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
     return;
   }
 
@@ -1267,19 +1300,19 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       lookupResult.status === "no_collections"
     ) {
       updateClipboardMessage(`${objectId} Object not found.`, "error");
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
       return;
     }
 
     if (lookupResult.status === "dependency_missing") {
       updateClipboardMessage(lookupResult.message, "error");
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
       return;
     }
 
     if (lookupResult.status === "invalid") {
       updateClipboardMessage(lookupResult.message, "error");
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
       return;
     }
 
@@ -1287,7 +1320,7 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       lookupResult.message || "Failed to search for the ObjectId.",
       "error",
     );
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
   } catch (error) {
     if (lookupToken !== clipboardLookupSequence) {
       return;
@@ -1297,7 +1330,7 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       (error && error.message) || "Unexpected error while processing the lookup.",
       "error",
     );
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
   }
 }
 
@@ -1686,7 +1719,7 @@ async function processClipboardContent(clipboardText) {
 
   if (!trimmed) {
     setObjectIdInputValue("", { fromClipboard: true });
-    renderClipboardIdleState();
+    renderClipboardIdleState(LOOKUP_MODES.OBJECT_ID);
     return;
   }
 
@@ -1697,7 +1730,7 @@ async function processClipboardContent(clipboardText) {
       `Clipboard is not a valid ObjectId. First line: ${preview || "(empty)"}`,
       "error",
     );
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
     return;
   }
 
@@ -1709,8 +1742,8 @@ function handleManualLookupRequest(rawValue, { showInvalidFeedback = false } = {
   const trimmed = typeof rawValue === "string" ? rawValue.trim() : "";
 
   if (!trimmed) {
-    renderClipboardIdleState();
-    clearClipboardOutput();
+    renderClipboardIdleState(LOOKUP_MODES.OBJECT_ID);
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
     return Promise.resolve();
   }
 
@@ -1722,9 +1755,9 @@ function handleManualLookupRequest(rawValue, { showInvalidFeedback = false } = {
       } else {
         updateClipboardMessage("Enter a valid ObjectId to search.", "info");
       }
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
     } else {
-      renderClipboardIdleState();
+      renderClipboardIdleState(LOOKUP_MODES.OBJECT_ID);
     }
 
     return Promise.resolve();
@@ -2995,6 +3028,7 @@ store.subscribe((state) => {
 
   if (state.activeConnectionId !== lastActiveConnectionId) {
     lastActiveConnectionId = state.activeConnectionId;
+    clearAllLookupOutputs();
     if (CLIPBOARD_MONITORING_ENABLED && isClipboardScanEnabled) {
       if (typeof lastClipboardContent === "string" && lastClipboardContent) {
         processClipboardContent(lastClipboardContent).catch((error) => {
@@ -3026,6 +3060,7 @@ async function init() {
   await loadConnections(); // Load connections from file
   const { connections, activeConnectionId } = store.getState();
   renderConnections(connections, activeConnectionId); // Initial render
+  clearAllLookupOutputs();
   renderClipboardIdleState();
 
   if (CLIPBOARD_MONITORING_ENABLED) {

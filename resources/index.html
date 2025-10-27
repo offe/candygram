@@ -160,6 +160,10 @@
                       <p class="text-xs text-gray-500">
                         Press Enter or rely on clipboard watching to run the lookup.
                       </p>
+                      <pre
+                        id="lookup-output-objectid"
+                        class="hidden max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-800"
+                      ></pre>
                     </section>
                     <section
                       id="lookup-panel-find"
@@ -176,12 +180,41 @@
                         >
                           Collection
                         </label>
-                        <select
-                          id="find-collection-select"
-                          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                        <div
+                          class="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3"
                         >
-                          <option value="">Select a collection</option>
-                        </select>
+                          <select
+                            id="find-collection-select"
+                            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 sm:flex-1"
+                          >
+                            <option value="">Select a collection</option>
+                          </select>
+                          <div class="flex flex-col gap-1 sm:w-32">
+                            <label
+                              for="find-limit-input"
+                              class="text-sm font-medium text-gray-700"
+                            >
+                              Result limit
+                            </label>
+                            <input
+                              id="find-limit-input"
+                              type="number"
+                              min="1"
+                              max="200"
+                              step="1"
+                              value="20"
+                              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                            />
+                          </div>
+                          <button
+                            id="find-run-button"
+                            type="button"
+                            class="inline-flex items-center justify-center rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-gray-300 sm:self-end"
+                            disabled
+                          >
+                            Run
+                          </button>
+                        </div>
                       </div>
                       <div class="space-y-1">
                         <label
@@ -202,36 +235,10 @@
                           aria-live="polite"
                         ></p>
                       </div>
-                      <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                        <div class="space-y-1">
-                          <label
-                            for="find-limit-input"
-                            class="block text-sm font-medium text-gray-700"
-                          >
-                            Result limit
-                          </label>
-                          <input
-                            id="find-limit-input"
-                            type="number"
-                            min="1"
-                            max="200"
-                            step="1"
-                            value="20"
-                            class="w-32 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                          />
-                          <p class="text-xs text-gray-500">
-                            Shows up to the specified number of documents.
-                          </p>
-                        </div>
-                        <button
-                          id="find-run-button"
-                          type="button"
-                          class="inline-flex items-center justify-center rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-gray-300"
-                          disabled
-                        >
-                          Run
-                        </button>
-                      </div>
+                      <pre
+                        id="lookup-output-find"
+                        class="hidden max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-800"
+                      ></pre>
                     </section>
                     <section
                       id="lookup-panel-aggregate"
@@ -248,12 +255,41 @@
                         >
                           Collection
                         </label>
-                        <select
-                          id="aggregate-collection-select"
-                          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                        <div
+                          class="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3"
                         >
-                          <option value="">Select a collection</option>
-                        </select>
+                          <select
+                            id="aggregate-collection-select"
+                            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 sm:flex-1"
+                          >
+                            <option value="">Select a collection</option>
+                          </select>
+                          <div class="flex flex-col gap-1 sm:w-32">
+                            <label
+                              for="aggregate-limit-input"
+                              class="text-sm font-medium text-gray-700"
+                            >
+                              Result limit
+                            </label>
+                            <input
+                              id="aggregate-limit-input"
+                              type="number"
+                              min="1"
+                              max="200"
+                              step="1"
+                              value="20"
+                              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                            />
+                          </div>
+                          <button
+                            id="aggregate-run-button"
+                            type="button"
+                            class="inline-flex items-center justify-center rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-gray-300 sm:self-end"
+                            disabled
+                          >
+                            Run
+                          </button>
+                        </div>
                       </div>
                       <div class="space-y-1">
                         <label
@@ -274,46 +310,16 @@
                           aria-live="polite"
                         ></p>
                       </div>
-                      <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                        <div class="space-y-1">
-                          <label
-                            for="aggregate-limit-input"
-                            class="block text-sm font-medium text-gray-700"
-                          >
-                            Result limit
-                          </label>
-                          <input
-                            id="aggregate-limit-input"
-                            type="number"
-                            min="1"
-                            max="200"
-                            step="1"
-                            value="20"
-                            class="w-32 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                          />
-                          <p class="text-xs text-gray-500">
-                            Caps the number of documents returned by the pipeline.
-                          </p>
-                        </div>
-                        <button
-                          id="aggregate-run-button"
-                          type="button"
-                          class="inline-flex items-center justify-center rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-gray-300"
-                          disabled
-                        >
-                          Run
-                        </button>
-                      </div>
+                      <pre
+                        id="lookup-output-aggregate"
+                        class="hidden max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-800"
+                      ></pre>
                     </section>
                   </div>
                 </div>
                 <p id="clipboard-status" class="text-sm text-gray-600">
                   Copy a MongoDB ObjectId to search the active connection.
                 </p>
-                <pre
-                  id="lookup-output"
-                  class="mt-2 hidden max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-800"
-                ></pre>
               </div>
             </div>
           </div>
