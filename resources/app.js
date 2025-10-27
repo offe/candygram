@@ -31,8 +31,8 @@ const MENU_ACTION_MAP = {
 };
 
 const CLIPBOARD_STATUS_ELEMENT_ID = "clipboard-status";
-const CLIPBOARD_OUTPUT_ELEMENT_ID = "clipboard-output";
 const OBJECT_ID_INPUT_ELEMENT_ID = "objectid-input";
+const OBJECT_ID_RUN_BUTTON_ID = "objectid-run-button";
 const CLIPBOARD_SCAN_TOGGLE_ELEMENT_ID = "clipboard-scan-toggle";
 const COLLECTIONS_STATUS_ELEMENT_ID = "collections-status";
 const COLLECTIONS_LIST_ELEMENT_ID = "collections-list";
@@ -42,6 +42,62 @@ const CLIPBOARD_STATUS_TONES = {
   error: "text-red-600",
   warning: "text-yellow-600",
 };
+
+const LOOKUP_MODE_BUTTON_SELECTOR = "[data-lookup-mode]";
+const LOOKUP_PANEL_SELECTOR = "[data-lookup-panel]";
+const FIND_COLLECTION_SELECT_ID = "find-collection-select";
+const FIND_FILTER_INPUT_ID = "find-filter-input";
+const FIND_PARSE_ERROR_ID = "find-parse-error";
+const FIND_LIMIT_INPUT_ID = "find-limit-input";
+const FIND_RUN_BUTTON_ID = "find-run-button";
+const AGGREGATE_COLLECTION_SELECT_ID = "aggregate-collection-select";
+const AGGREGATE_PIPELINE_INPUT_ID = "aggregate-pipeline-input";
+const AGGREGATE_PARSE_ERROR_ID = "aggregate-parse-error";
+const AGGREGATE_LIMIT_INPUT_ID = "aggregate-limit-input";
+const AGGREGATE_RUN_BUTTON_ID = "aggregate-run-button";
+
+const LOOKUP_MODES = {
+  OBJECT_ID: "objectId",
+  FIND: "find",
+  AGGREGATE: "aggregate",
+};
+
+const LOOKUP_OUTPUT_ELEMENT_IDS = {
+  [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid",
+  [LOOKUP_MODES.FIND]: "lookup-output-find",
+  [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate",
+};
+
+const LOOKUP_OUTPUT_CONTAINER_IDS = {
+  [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid-container",
+  [LOOKUP_MODES.FIND]: "lookup-output-find-container",
+  [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate-container",
+};
+
+const LOOKUP_OUTPUT_COUNT_IDS = {
+  [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid-count",
+  [LOOKUP_MODES.FIND]: "lookup-output-find-count",
+  [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate-count",
+};
+
+const LOOKUP_OUTPUT_ACTION_CONTAINER_IDS = {
+  [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid-actions",
+  [LOOKUP_MODES.FIND]: "lookup-output-find-actions",
+  [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate-actions",
+};
+
+const LOOKUP_OUTPUT_COPY_BUTTON_IDS = {
+  [LOOKUP_MODES.OBJECT_ID]: "lookup-output-objectid-copy",
+  [LOOKUP_MODES.FIND]: "lookup-output-find-copy",
+  [LOOKUP_MODES.AGGREGATE]: "lookup-output-aggregate-copy",
+};
+
+const DEFAULT_FIND_LIMIT = 20;
+const DEFAULT_AGGREGATE_LIMIT = 20;
+const MAX_RESULT_LIMIT = 200;
+const LOOKUP_TAB_BASE_CLASS = "rounded-md px-3 py-1.5 text-sm font-medium";
+const LOOKUP_TAB_ACTIVE_CLASS = "text-sky-700 bg-sky-100";
+const LOOKUP_TAB_INACTIVE_CLASS = "text-gray-600 hover:bg-gray-100";
 
 const SIDEBAR_TRANSITION_DURATION_MS = 300;
 
@@ -389,16 +445,157 @@ let clipboardLookupSequence = 0;
 let lastActiveConnectionId = null;
 let isClipboardScanEnabled = CLIPBOARD_MONITORING_ENABLED;
 let objectIdInputValue = "";
+let isObjectIdRunInFlight = false;
 let collectionsRequestSequence = 0;
 let lastConnectionsSnapshot = null;
 let lastActiveConnectionSignature = null;
+let activeLookupMode = LOOKUP_MODES.OBJECT_ID;
+
+const findModeState = {
+  collection: "",
+  filterText: "",
+  parsedFilter: null,
+  isValid: false,
+  isLimitValid: true,
+  isRunning: false,
+  limit: DEFAULT_FIND_LIMIT,
+};
+
+const aggregateModeState = {
+  collection: "",
+  pipelineText: "",
+  parsedPipeline: null,
+  isValid: false,
+  isLimitValid: true,
+  isRunning: false,
+  limit: DEFAULT_AGGREGATE_LIMIT,
+};
+
+let lastLookupCollectionsSignature = null;
+
+const lookupResultAvailability = {
+  [LOOKUP_MODES.OBJECT_ID]: false,
+  [LOOKUP_MODES.FIND]: false,
+  [LOOKUP_MODES.AGGREGATE]: false,
+};
 
 function getClipboardStatusElement() {
   return document.getElementById(CLIPBOARD_STATUS_ELEMENT_ID);
 }
 
-function getClipboardOutputElement() {
-  return document.getElementById(CLIPBOARD_OUTPUT_ELEMENT_ID);
+function getClipboardOutputElement(mode = activeLookupMode) {
+  const elementId = LOOKUP_OUTPUT_ELEMENT_IDS[mode] || null;
+  if (!elementId) {
+    return null;
+  }
+
+  return document.getElementById(elementId);
+}
+
+function getLookupOutputContainer(mode = activeLookupMode) {
+  const containerId = LOOKUP_OUTPUT_CONTAINER_IDS[mode] || null;
+  if (!containerId) {
+    return null;
+  }
+
+  return document.getElementById(containerId);
+}
+
+function getLookupResultCountElement(mode = activeLookupMode) {
+  const countId = LOOKUP_OUTPUT_COUNT_IDS[mode] || null;
+  if (!countId) {
+    return null;
+  }
+
+  return document.getElementById(countId);
+}
+
+function getLookupOutputActionContainer(mode = activeLookupMode) {
+  const actionContainerId = LOOKUP_OUTPUT_ACTION_CONTAINER_IDS[mode] || null;
+  if (!actionContainerId) {
+    return null;
+  }
+
+  return document.getElementById(actionContainerId);
+}
+
+function getLookupCopyButton(mode = activeLookupMode) {
+  const buttonId = LOOKUP_OUTPUT_COPY_BUTTON_IDS[mode] || null;
+  if (!buttonId) {
+    return null;
+  }
+
+  return document.getElementById(buttonId);
+}
+
+function setLookupResultAvailability(mode = activeLookupMode, hasResult = false) {
+  const normalizedMode = Object.values(LOOKUP_MODES).includes(mode)
+    ? mode
+    : activeLookupMode;
+
+  lookupResultAvailability[normalizedMode] = Boolean(hasResult);
+
+  const copyButton = getLookupCopyButton(normalizedMode);
+  if (copyButton) {
+    const disabled = !lookupResultAvailability[normalizedMode];
+    copyButton.disabled = disabled;
+    copyButton.setAttribute("aria-disabled", disabled ? "true" : "false");
+  }
+}
+
+function formatDocumentCount(count) {
+  if (!Number.isFinite(count)) {
+    return "";
+  }
+
+  const normalized = Math.max(0, Math.trunc(count));
+  const noun = normalized === 1 ? "document" : "documents";
+  return `${normalized} ${noun} found`;
+}
+
+function setLookupDocumentCount(
+  mode = activeLookupMode,
+  count = null,
+  { customLabel = null } = {},
+) {
+  const countElement = getLookupResultCountElement(mode);
+  if (!countElement) {
+    return;
+  }
+
+  if (typeof customLabel === "string") {
+    countElement.textContent = customLabel;
+    return;
+  }
+
+  if (typeof count === "number" && Number.isFinite(count)) {
+    countElement.textContent = formatDocumentCount(count);
+  } else {
+    countElement.textContent = "";
+  }
+}
+
+async function copyLookupOutput(mode = activeLookupMode) {
+  const normalizedMode = Object.values(LOOKUP_MODES).includes(mode)
+    ? mode
+    : activeLookupMode;
+
+  const hasResult = lookupResultAvailability[normalizedMode];
+  const outputElement = getClipboardOutputElement(normalizedMode);
+
+  if (!hasResult || !outputElement) {
+    updateClipboardMessage("No results available to copy.", "warning");
+    return;
+  }
+
+  const text = outputElement.textContent || "";
+  if (!text.trim()) {
+    updateClipboardMessage("Result is empty; nothing to copy.", "warning");
+    return;
+  }
+
+  await handleClipboardWrite(text);
+  updateClipboardMessage("Results copied to clipboard.", "success");
 }
 
 function updateClipboardMessage(message, tone = "info") {
@@ -412,14 +609,26 @@ function updateClipboardMessage(message, tone = "info") {
   element.className = `text-sm ${toneClass}`;
 }
 
-function clearClipboardOutput() {
-  const outputElement = getClipboardOutputElement();
-  if (!outputElement) {
-    return;
+function clearClipboardOutput(mode = activeLookupMode) {
+  const outputElement = getClipboardOutputElement(mode);
+  if (outputElement) {
+    outputElement.textContent = "";
+    outputElement.classList.add("hidden");
   }
 
-  outputElement.innerHTML = "";
-  outputElement.classList.add("hidden");
+  const container = getLookupOutputContainer(mode);
+  if (container) {
+    container.classList.add("hidden");
+  }
+
+  setLookupDocumentCount(mode, null);
+  setLookupResultAvailability(mode, false);
+}
+
+function clearAllLookupOutputs() {
+  Object.values(LOOKUP_MODES).forEach((mode) => {
+    clearClipboardOutput(mode);
+  });
 }
 
 function getObjectIdInputElement() {
@@ -430,6 +639,48 @@ function getClipboardScanToggleElement() {
   return document.getElementById(CLIPBOARD_SCAN_TOGGLE_ELEMENT_ID);
 }
 
+function getObjectIdRunButtonElement() {
+  return document.getElementById(OBJECT_ID_RUN_BUTTON_ID);
+}
+
+function updateObjectIdControlsState() {
+  const input = getObjectIdInputElement();
+  const runButton = getObjectIdRunButtonElement();
+  const watching = isClipboardWatcherActive();
+  const hasValue = Boolean(objectIdInputValue && objectIdInputValue.trim());
+  const busy = Boolean(isObjectIdRunInFlight);
+
+  if (input) {
+    input.disabled = watching;
+    if (watching) {
+      input.setAttribute("aria-disabled", "true");
+      input.setAttribute(
+        "title",
+        "Disable clipboard watching to edit the ObjectId manually.",
+      );
+    } else {
+      input.removeAttribute("aria-disabled");
+      input.removeAttribute("title");
+    }
+  }
+
+  if (runButton) {
+    const shouldDisable = watching || !hasValue || busy;
+    runButton.disabled = shouldDisable;
+    runButton.setAttribute("aria-disabled", shouldDisable ? "true" : "false");
+
+    if (watching) {
+      runButton.title = "Disable clipboard watching to run manually.";
+    } else if (!hasValue) {
+      runButton.title = "Enter an ObjectId to run the lookup.";
+    } else if (busy) {
+      runButton.title = "Running lookup...";
+    } else {
+      runButton.removeAttribute("title");
+    }
+  }
+}
+
 function applyClipboardScanState() {
   const toggle = getClipboardScanToggleElement();
   if (toggle) {
@@ -437,6 +688,9 @@ function applyClipboardScanState() {
     if (!CLIPBOARD_MONITORING_ENABLED) {
       toggle.disabled = true;
       toggle.title = "Clipboard scanning is unavailable.";
+    } else if (activeLookupMode !== LOOKUP_MODES.OBJECT_ID) {
+      toggle.disabled = true;
+      toggle.title = "Clipboard watching is available in the ObjectId tab.";
     } else {
       toggle.disabled = false;
       toggle.removeAttribute("title");
@@ -447,6 +701,16 @@ function applyClipboardScanState() {
   if (input) {
     input.setAttribute("aria-live", "polite");
   }
+
+  updateObjectIdControlsState();
+}
+
+function isClipboardWatcherActive() {
+  return (
+    CLIPBOARD_MONITORING_ENABLED &&
+    activeLookupMode === LOOKUP_MODES.OBJECT_ID &&
+    Boolean(isClipboardScanEnabled)
+  );
 }
 
 function setClipboardScanEnabled(enabled) {
@@ -458,13 +722,13 @@ function setClipboardScanEnabled(enabled) {
   isClipboardScanEnabled = normalized;
   applyClipboardScanState();
 
-  if (isClipboardScanEnabled) {
+  if (isClipboardWatcherActive()) {
     renderClipboardIdleState();
-    if (CLIPBOARD_MONITORING_ENABLED) {
-      getClipboardContent();
-    }
+    getClipboardContent();
+  } else if (activeLookupMode === LOOKUP_MODES.OBJECT_ID) {
+    renderClipboardIdleState();
   } else {
-    renderClipboardIdleState();
+    updateLookupIdleMessage();
   }
 }
 
@@ -480,59 +744,700 @@ function setObjectIdInputValue(value, { fromClipboard = false } = {}) {
   } else if (input) {
     input.dataset.lastSource = "input";
   }
+
+  updateObjectIdControlsState();
 }
 
-function renderClipboardIdleState() {
-  const idleMessage = isClipboardScanEnabled
-    ? "Copy a MongoDB ObjectId to search the active connection."
-    : "Enter a MongoDB ObjectId to search the active connection.";
-  updateClipboardMessage(idleMessage, "info");
-  clearClipboardOutput();
+function getLookupIdleMessage() {
+  if (activeLookupMode === LOOKUP_MODES.OBJECT_ID) {
+    return isClipboardWatcherActive()
+      ? "Copy a MongoDB ObjectId to search the active connection."
+      : "Enter a MongoDB ObjectId and press Enter or Run to search the active connection.";
+  }
+
+  if (activeLookupMode === LOOKUP_MODES.FIND) {
+    return "Select a collection and enter a JSON filter to run a find query.";
+  }
+
+  if (activeLookupMode === LOOKUP_MODES.AGGREGATE) {
+    return "Provide a JSON pipeline to run the aggregation.";
+  }
+
+  return "Choose a lookup mode to begin.";
+}
+
+function updateLookupIdleMessage() {
+  updateClipboardMessage(getLookupIdleMessage(), "info");
+}
+
+function renderClipboardIdleState(mode = activeLookupMode) {
+  updateLookupIdleMessage();
+  clearClipboardOutput(mode);
+}
+
+function renderLookupLoadingMessage(message, mode = activeLookupMode) {
+  const outputElement = getClipboardOutputElement(mode);
+  if (!outputElement) {
+    return;
+  }
+
+  outputElement.textContent = message || "Running lookup...";
+  outputElement.classList.remove("hidden");
+
+  const container = getLookupOutputContainer(mode);
+  if (container) {
+    container.classList.remove("hidden");
+  }
+
+  setLookupDocumentCount(mode, null);
+  setLookupResultAvailability(mode, false);
 }
 
 function renderClipboardLoading(objectId) {
-  const outputElement = getClipboardOutputElement();
+  renderLookupLoadingMessage(
+    `Running ObjectId lookup for ObjectId(${objectId})...`,
+    LOOKUP_MODES.OBJECT_ID,
+  );
+}
+
+function renderJsonResult(value, mode = activeLookupMode, documentCount = null) {
+  const outputElement = getClipboardOutputElement(mode);
   if (!outputElement) {
     return;
   }
 
-  outputElement.innerHTML = "";
-  const loadingMessage = document.createElement("div");
-  loadingMessage.className = "text-xs text-gray-500";
-  loadingMessage.textContent = `Running ObjectId lookup for ObjectId(${objectId})...`;
-  outputElement.appendChild(loadingMessage);
-  outputElement.classList.remove("hidden");
+  try {
+    outputElement.textContent = JSON.stringify(value, null, 2);
+    outputElement.classList.remove("hidden");
+
+    const container = getLookupOutputContainer(mode);
+    if (container) {
+      container.classList.remove("hidden");
+    }
+
+    if (typeof documentCount === "number" && Number.isFinite(documentCount)) {
+      setLookupDocumentCount(mode, documentCount);
+    } else {
+      setLookupDocumentCount(mode, null);
+    }
+
+    setLookupResultAvailability(mode, true);
+  } catch (error) {
+    console.error("Failed to render JSON result:", error);
+    clearClipboardOutput(mode);
+  }
 }
 
 function renderClipboardMatches(matches) {
-  const outputElement = getClipboardOutputElement();
-  if (!outputElement) {
+  if (!Array.isArray(matches) || matches.length === 0) {
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
     return;
   }
 
-  outputElement.innerHTML = "";
+  if (matches.length === 1) {
+    const match = matches[0] || {};
+    const documentForDisplay =
+      match && typeof match === "object" && match.document ? match.document : {};
+    renderJsonResult(documentForDisplay, LOOKUP_MODES.OBJECT_ID, 1);
+    return;
+  }
 
+  const grouped = {};
   matches.forEach((match) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "border border-gray-200 rounded-md p-3";
+    if (!match || typeof match !== "object") {
+      return;
+    }
 
-    const heading = document.createElement("div");
-    heading.className = "text-sm font-semibold text-gray-700";
-    const collectionName = match && match.collection ? String(match.collection) : "unknown collection";
-    heading.textContent = `Found in ${collectionName}`;
-
-    const jsonBlock = document.createElement("pre");
-    jsonBlock.className =
-      "mt-2 text-xs bg-gray-50 rounded-md p-2 overflow-x-auto whitespace-pre-wrap font-mono text-gray-800";
-    const documentForDisplay = match && match.document ? match.document : {};
-    jsonBlock.textContent = JSON.stringify(documentForDisplay, null, 2);
-
-    wrapper.appendChild(heading);
-    wrapper.appendChild(jsonBlock);
-    outputElement.appendChild(wrapper);
+    const collectionName =
+      match.collection && typeof match.collection === "string"
+        ? match.collection
+        : "unknown";
+    grouped[collectionName] = match.document || null;
   });
 
-  outputElement.classList.remove("hidden");
+  renderJsonResult(grouped, LOOKUP_MODES.OBJECT_ID, matches.length);
+}
+
+function updateParseErrorMessage(elementId, message) {
+  const element = elementId ? document.getElementById(elementId) : null;
+  if (!element) {
+    return;
+  }
+
+  if (message) {
+    element.textContent = message;
+    element.classList.remove("hidden");
+  } else {
+    element.textContent = "";
+    element.classList.add("hidden");
+  }
+}
+
+function parseJsonStructure(rawText, {
+  expectObject = false,
+  expectArray = false,
+  emptyMessage = "",
+  typeMismatchMessage = "",
+} = {}) {
+  const trimmed = typeof rawText === "string" ? rawText.trim() : "";
+
+  if (!trimmed) {
+    return { valid: false, value: null, message: emptyMessage || "" };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    return { valid: false, value: null, message: `Invalid JSON: ${message}` };
+  }
+
+  if (expectObject) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        valid: false,
+        value: null,
+        message: typeMismatchMessage || "Value must be a JSON object.",
+      };
+    }
+  }
+
+  if (expectArray) {
+    if (!Array.isArray(parsed)) {
+      return {
+        valid: false,
+        value: null,
+        message: typeMismatchMessage || "Value must be a JSON array.",
+      };
+    }
+  }
+
+  return { valid: true, value: parsed, message: "" };
+}
+
+function normalizeResultLimitInput(inputElement, modeState) {
+  if (!inputElement || !modeState) {
+    return;
+  }
+
+  const rawValue = inputElement.value;
+  const parsed = Number.parseInt(rawValue, 10);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    inputElement.setCustomValidity("Enter a result limit of 1 or greater.");
+    modeState.isLimitValid = false;
+    return;
+  }
+
+  if (parsed > MAX_RESULT_LIMIT) {
+    inputElement.setCustomValidity(
+      `Enter a result limit of ${MAX_RESULT_LIMIT} or fewer.`,
+    );
+    modeState.isLimitValid = false;
+    return;
+  }
+
+  inputElement.setCustomValidity("");
+  modeState.isLimitValid = true;
+  modeState.limit = parsed;
+}
+
+function updateFindRunButtonState() {
+  const button = document.getElementById(FIND_RUN_BUTTON_ID);
+  if (!button) {
+    return;
+  }
+
+  const disabled =
+    !findModeState.isValid ||
+    !findModeState.isLimitValid ||
+    !findModeState.collection ||
+    findModeState.isRunning;
+
+  button.disabled = disabled;
+}
+
+function updateAggregateRunButtonState() {
+  const button = document.getElementById(AGGREGATE_RUN_BUTTON_ID);
+  if (!button) {
+    return;
+  }
+
+  const disabled =
+    !aggregateModeState.isValid ||
+    !aggregateModeState.isLimitValid ||
+    !aggregateModeState.collection ||
+    aggregateModeState.isRunning;
+
+  button.disabled = disabled;
+}
+
+function handleFindFilterChange(rawText) {
+  findModeState.filterText = typeof rawText === "string" ? rawText : "";
+  const { valid, value, message } = parseJsonStructure(findModeState.filterText, {
+    expectObject: true,
+    emptyMessage: "",
+    typeMismatchMessage: "Filter must be a JSON object.",
+  });
+
+  findModeState.isValid = valid;
+  findModeState.parsedFilter = valid ? value : null;
+  updateParseErrorMessage(FIND_PARSE_ERROR_ID, message);
+  updateFindRunButtonState();
+}
+
+function handleAggregatePipelineChange(rawText) {
+  aggregateModeState.pipelineText = typeof rawText === "string" ? rawText : "";
+  const { valid, value, message } = parseJsonStructure(
+    aggregateModeState.pipelineText,
+    {
+      expectArray: true,
+      emptyMessage: "",
+      typeMismatchMessage: "Pipeline must be a JSON array.",
+    },
+  );
+
+  aggregateModeState.isValid = valid;
+  aggregateModeState.parsedPipeline = valid ? value : null;
+  updateParseErrorMessage(AGGREGATE_PARSE_ERROR_ID, message);
+  updateAggregateRunButtonState();
+}
+
+function populateCollectionSelect(selectElement, placeholderText, modeState, collections) {
+  if (!selectElement || !modeState) {
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  const placeholderOption = document.createElement("option");
+  placeholderOption.value = "";
+  placeholderOption.textContent = placeholderText;
+  fragment.appendChild(placeholderOption);
+
+  const safeCollections = Array.isArray(collections) ? collections : [];
+  safeCollections.forEach((name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    fragment.appendChild(option);
+  });
+
+  while (selectElement.firstChild) {
+    selectElement.removeChild(selectElement.firstChild);
+  }
+
+  selectElement.appendChild(fragment);
+
+  const preservedValue = safeCollections.includes(modeState.collection)
+    ? modeState.collection
+    : "";
+
+  if (preservedValue !== modeState.collection) {
+    modeState.collection = preservedValue;
+  }
+
+  selectElement.value = preservedValue;
+}
+
+function syncLookupCollectionDropdowns(collections, { connectionId, status } = {}) {
+  const collectionsSignature = Array.isArray(collections)
+    ? collections.join("\u0001")
+    : "";
+  const signature = `${connectionId || "none"}|${status || "unknown"}|${collectionsSignature}`;
+
+  if (signature === lastLookupCollectionsSignature) {
+    return;
+  }
+
+  lastLookupCollectionsSignature = signature;
+
+  populateCollectionSelect(
+    document.getElementById(FIND_COLLECTION_SELECT_ID),
+    "Select a collection",
+    findModeState,
+    collections,
+  );
+  populateCollectionSelect(
+    document.getElementById(AGGREGATE_COLLECTION_SELECT_ID),
+    "Select a collection",
+    aggregateModeState,
+    collections,
+  );
+
+  updateFindRunButtonState();
+  updateAggregateRunButtonState();
+}
+
+function getLookupModeButtons() {
+  return Array.from(document.querySelectorAll(LOOKUP_MODE_BUTTON_SELECTOR));
+}
+
+function getLookupPanels() {
+  return Array.from(document.querySelectorAll(LOOKUP_PANEL_SELECTOR));
+}
+
+function applyLookupModeState() {
+  const buttons = getLookupModeButtons();
+  buttons.forEach((button) => {
+    const mode = button.dataset.lookupMode;
+    const isActive = mode === activeLookupMode;
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+    button.className = `${LOOKUP_TAB_BASE_CLASS} ${
+      isActive ? LOOKUP_TAB_ACTIVE_CLASS : LOOKUP_TAB_INACTIVE_CLASS
+    }`;
+    button.tabIndex = isActive ? 0 : -1;
+  });
+
+  const panels = getLookupPanels();
+  panels.forEach((panel) => {
+    const panelMode = panel.dataset.lookupPanel;
+    const isActive = panelMode === activeLookupMode;
+    panel.classList.toggle("hidden", !isActive);
+    if (isActive) {
+      panel.removeAttribute("tabindex");
+    } else {
+      panel.setAttribute("tabindex", "-1");
+    }
+  });
+
+  applyClipboardScanState();
+  updateLookupIdleMessage();
+}
+
+function setActiveLookupMode(nextMode) {
+  const allowedModes = Object.values(LOOKUP_MODES);
+  const normalized = allowedModes.includes(nextMode) ? nextMode : LOOKUP_MODES.OBJECT_ID;
+
+  if (normalized === activeLookupMode) {
+    return;
+  }
+
+  activeLookupMode = normalized;
+  applyLookupModeState();
+
+  if (activeLookupMode === LOOKUP_MODES.OBJECT_ID) {
+    if (isClipboardWatcherActive()) {
+      if (typeof lastClipboardContent === "string" && lastClipboardContent) {
+        processClipboardContent(lastClipboardContent).catch((error) => {
+          console.error("Failed to refresh clipboard lookup:", error);
+        });
+      } else if (objectIdInputValue && objectIdInputValue.trim()) {
+        handleManualLookupRequest(objectIdInputValue, {
+          showInvalidFeedback: false,
+        }).catch((error) => {
+          console.error("Failed to refresh ObjectId lookup:", error);
+        });
+      }
+    } else if (objectIdInputValue && objectIdInputValue.trim()) {
+      handleManualLookupRequest(objectIdInputValue, {
+        showInvalidFeedback: false,
+      }).catch((error) => {
+        console.error("Failed to refresh ObjectId lookup:", error);
+      });
+    }
+  }
+}
+
+function handleLookupTabKeydown(event) {
+  const currentButton = event.currentTarget;
+  if (!currentButton || !currentButton.dataset) {
+    return;
+  }
+
+  const modeOrder = [
+    LOOKUP_MODES.OBJECT_ID,
+    LOOKUP_MODES.FIND,
+    LOOKUP_MODES.AGGREGATE,
+  ];
+  const currentMode = currentButton.dataset.lookupMode;
+  const currentIndex = modeOrder.indexOf(currentMode);
+  if (currentIndex === -1) {
+    return;
+  }
+
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+    event.preventDefault();
+    const nextIndex = (currentIndex + 1) % modeOrder.length;
+    const nextMode = modeOrder[nextIndex];
+    setActiveLookupMode(nextMode);
+    const buttons = getLookupModeButtons();
+    const nextButton = buttons.find((button) => button.dataset.lookupMode === nextMode);
+    if (nextButton) {
+      nextButton.focus();
+    }
+  } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const previousIndex = (currentIndex - 1 + modeOrder.length) % modeOrder.length;
+    const previousMode = modeOrder[previousIndex];
+    setActiveLookupMode(previousMode);
+    const buttons = getLookupModeButtons();
+    const previousButton = buttons.find(
+      (button) => button.dataset.lookupMode === previousMode,
+    );
+    if (previousButton) {
+      previousButton.focus();
+    }
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    const firstMode = modeOrder[0];
+    setActiveLookupMode(firstMode);
+    const buttons = getLookupModeButtons();
+    const firstButton = buttons.find((button) => button.dataset.lookupMode === firstMode);
+    if (firstButton) {
+      firstButton.focus();
+    }
+  } else if (event.key === "End") {
+    event.preventDefault();
+    const lastMode = modeOrder[modeOrder.length - 1];
+    setActiveLookupMode(lastMode);
+    const buttons = getLookupModeButtons();
+    const lastButton = buttons.find((button) => button.dataset.lookupMode === lastMode);
+    if (lastButton) {
+      lastButton.focus();
+    }
+  } else if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    setActiveLookupMode(currentMode);
+  }
+}
+
+function setButtonBusy(button, isBusy, busyLabel = "Running…") {
+  if (!button) {
+    return;
+  }
+
+  if (isBusy) {
+    if (!button.dataset.originalLabel) {
+      button.dataset.originalLabel = button.textContent || "";
+    }
+    button.textContent = busyLabel;
+  } else {
+    const original = button.dataset.originalLabel || "Run";
+    button.textContent = original;
+    delete button.dataset.originalLabel;
+  }
+}
+
+function setupLookupOutputCopyButtons() {
+  Object.values(LOOKUP_MODES).forEach((mode) => {
+    const actionContainer = getLookupOutputActionContainer(mode);
+    if (!actionContainer) {
+      return;
+    }
+
+    const copyButtonId = LOOKUP_OUTPUT_COPY_BUTTON_IDS[mode];
+    if (copyButtonId && document.getElementById(copyButtonId)) {
+      return;
+    }
+
+    const copyButton = createIconButton({
+      iconName: "FaRegClipboard",
+      ariaLabel: "Copy results to clipboard",
+      buttonClass:
+        "text-gray-500 hover:text-gray-700 hover:bg-gray-100 focus:ring-sky-500 disabled:cursor-not-allowed disabled:text-gray-300",
+      iconClass: "w-4 h-4",
+      fallbackContent: "⧉",
+    });
+
+    if (!copyButton) {
+      return;
+    }
+
+    copyButton.id = copyButtonId;
+    copyButton.disabled = true;
+    copyButton.setAttribute("aria-disabled", "true");
+
+    copyButton.addEventListener("click", () => {
+      copyLookupOutput(mode).catch((error) => {
+        console.error("Failed to copy lookup results:", error);
+        updateClipboardMessage(
+          "Failed to copy results to the clipboard.",
+          "error",
+        );
+      });
+    });
+
+    actionContainer.appendChild(copyButton);
+  });
+
+  Object.values(LOOKUP_MODES).forEach((mode) => {
+    setLookupResultAvailability(mode, lookupResultAvailability[mode]);
+  });
+}
+
+async function executeFindQuery() {
+  if (
+    findModeState.isRunning ||
+    !findModeState.isValid ||
+    !findModeState.isLimitValid ||
+    !findModeState.collection
+  ) {
+    updateClipboardMessage(
+      "Provide a collection, valid filter, and limit to run the find query.",
+      "warning",
+    );
+    if (!findModeState.isLimitValid) {
+      const limitInput = document.getElementById(FIND_LIMIT_INPUT_ID);
+      if (limitInput) {
+        limitInput.reportValidity();
+      }
+    }
+    return;
+  }
+
+  const state = store.getState();
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === state.activeConnectionId)
+    : null;
+
+  if (!activeConnection) {
+    updateClipboardMessage(
+      "Select an active connection before running a find query.",
+      "warning",
+    );
+    return;
+  }
+
+  const runButton = document.getElementById(FIND_RUN_BUTTON_ID);
+  findModeState.isRunning = true;
+  if (runButton) {
+    setButtonBusy(runButton, true);
+  }
+  updateFindRunButtonState();
+
+  const statusMessage = `Running find on ${findModeState.collection}...`;
+  updateClipboardMessage(statusMessage, "info");
+  renderLookupLoadingMessage(statusMessage, LOOKUP_MODES.FIND);
+
+  try {
+    const result = await runFindQueryInConnection(activeConnection, {
+      collection: findModeState.collection,
+      filter: findModeState.parsedFilter,
+      limit: findModeState.limit,
+    });
+
+    if (result.status === "ok" || result.status === "found") {
+      updateClipboardMessage("Find query complete.", "success");
+      const documents = Array.isArray(result.results) ? result.results : [];
+      renderJsonResult(documents, LOOKUP_MODES.FIND, documents.length);
+      return;
+    }
+
+    if (result.status === "dependency_missing") {
+      updateClipboardMessage(result.message, "error");
+      clearClipboardOutput(LOOKUP_MODES.FIND);
+      return;
+    }
+
+    if (result.status === "invalid" || result.status === "invalid_limit") {
+      updateClipboardMessage(result.message || "Find query input is invalid.", "error");
+      clearClipboardOutput(LOOKUP_MODES.FIND);
+      return;
+    }
+
+    updateClipboardMessage(result.message || "Find query failed.", "error");
+    clearClipboardOutput(LOOKUP_MODES.FIND);
+  } catch (error) {
+    updateClipboardMessage(
+      (error && error.message) || "Find query execution failed.",
+      "error",
+    );
+    clearClipboardOutput(LOOKUP_MODES.FIND);
+  } finally {
+    findModeState.isRunning = false;
+    if (runButton) {
+      setButtonBusy(runButton, false);
+    }
+    updateFindRunButtonState();
+  }
+}
+
+async function executeAggregateQuery() {
+  if (
+    aggregateModeState.isRunning ||
+    !aggregateModeState.isValid ||
+    !aggregateModeState.isLimitValid ||
+    !aggregateModeState.collection
+  ) {
+    updateClipboardMessage(
+      "Provide a collection, valid pipeline, and limit to run the aggregation.",
+      "warning",
+    );
+    if (!aggregateModeState.isLimitValid) {
+      const limitInput = document.getElementById(AGGREGATE_LIMIT_INPUT_ID);
+      if (limitInput) {
+        limitInput.reportValidity();
+      }
+    }
+    return;
+  }
+
+  const state = store.getState();
+  const activeConnection = Array.isArray(state.connections)
+    ? state.connections.find((conn) => conn.id === state.activeConnectionId)
+    : null;
+
+  if (!activeConnection) {
+    updateClipboardMessage(
+      "Select an active connection before running an aggregation.",
+      "warning",
+    );
+    return;
+  }
+
+  const runButton = document.getElementById(AGGREGATE_RUN_BUTTON_ID);
+  aggregateModeState.isRunning = true;
+  if (runButton) {
+    setButtonBusy(runButton, true);
+  }
+  updateAggregateRunButtonState();
+
+  const statusMessage = `Running aggregation on ${aggregateModeState.collection}...`;
+  updateClipboardMessage(statusMessage, "info");
+  renderLookupLoadingMessage(statusMessage, LOOKUP_MODES.AGGREGATE);
+
+  try {
+    const result = await runAggregateQueryInConnection(activeConnection, {
+      collection: aggregateModeState.collection,
+      pipeline: aggregateModeState.parsedPipeline,
+      limit: aggregateModeState.limit,
+    });
+
+    if (result.status === "ok" || result.status === "found") {
+      updateClipboardMessage("Aggregation complete.", "success");
+      const documents = Array.isArray(result.results) ? result.results : [];
+      renderJsonResult(documents, LOOKUP_MODES.AGGREGATE, documents.length);
+      return;
+    }
+
+    if (result.status === "dependency_missing") {
+      updateClipboardMessage(result.message, "error");
+      clearClipboardOutput(LOOKUP_MODES.AGGREGATE);
+      return;
+    }
+
+    if (result.status === "invalid" || result.status === "invalid_limit") {
+      updateClipboardMessage(result.message || "Aggregation input is invalid.", "error");
+      clearClipboardOutput(LOOKUP_MODES.AGGREGATE);
+      return;
+    }
+
+    updateClipboardMessage(result.message || "Aggregation failed.", "error");
+    clearClipboardOutput(LOOKUP_MODES.AGGREGATE);
+  } catch (error) {
+    updateClipboardMessage(
+      (error && error.message) || "Aggregation execution failed.",
+      "error",
+    );
+    clearClipboardOutput(LOOKUP_MODES.AGGREGATE);
+  } finally {
+    aggregateModeState.isRunning = false;
+    if (runButton) {
+      setButtonBusy(runButton, false);
+    }
+    updateAggregateRunButtonState();
+  }
 }
 
 function getFirstClipboardLine(text) {
@@ -587,7 +1492,7 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       `Ready to search for ObjectId(${objectId}). Select an active connection first.`,
       "warning",
     );
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
     return;
   }
 
@@ -639,19 +1544,19 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       lookupResult.status === "no_collections"
     ) {
       updateClipboardMessage(`${objectId} Object not found.`, "error");
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
       return;
     }
 
     if (lookupResult.status === "dependency_missing") {
       updateClipboardMessage(lookupResult.message, "error");
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
       return;
     }
 
     if (lookupResult.status === "invalid") {
       updateClipboardMessage(lookupResult.message, "error");
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
       return;
     }
 
@@ -659,7 +1564,7 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       lookupResult.message || "Failed to search for the ObjectId.",
       "error",
     );
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
   } catch (error) {
     if (lookupToken !== clipboardLookupSequence) {
       return;
@@ -669,7 +1574,7 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       (error && error.message) || "Unexpected error while processing the lookup.",
       "error",
     );
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
   }
 }
 
@@ -764,6 +1669,176 @@ async function lookupObjectIdInConnection(connection, objectId) {
     return {
       status: "error",
       message: (error && error.message) || "ObjectId lookup execution failed.",
+      error,
+    };
+  }
+}
+
+function parseFirstJsonObjectFromOutput(stdOut) {
+  if (!stdOut) {
+    return null;
+  }
+
+  const lines = String(stdOut)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === "object") {
+        return parsed;
+      }
+    } catch (error) {
+      // Ignore invalid JSON lines.
+    }
+  }
+
+  return null;
+}
+
+async function runFindQueryInConnection(connection, { collection, filter, limit }) {
+  if (!connection || !connection.uri) {
+    return {
+      status: "error",
+      message: "Active connection is missing a MongoDB URI.",
+    };
+  }
+
+  if (!Neutralino || !Neutralino.os || typeof Neutralino.os.execCommand !== "function") {
+    return {
+      status: "error",
+      message: "Neutralino OS command execution is unavailable.",
+    };
+  }
+
+  const escapedUri = escapeShellDoubleQuotes(connection.uri);
+  const escapedCollection = escapeShellDoubleQuotes(collection);
+  const filterJson = JSON.stringify(filter);
+  const escapedFilter = escapeShellDoubleQuotes(filterJson);
+  const escapedLimit = escapeShellDoubleQuotes(String(limit));
+  const command = `node resources/scripts/runFindQuery.js "${escapedUri}" "${escapedCollection}" "${escapedFilter}" "${escapedLimit}"`;
+
+  try {
+    const result = await Neutralino.os.execCommand(command);
+    const exitCode = result && typeof result.exitCode !== "undefined" ? Number(result.exitCode) : null;
+    const stdOut = result && result.stdOut ? String(result.stdOut).trim() : "";
+    const stdErr = result && result.stdErr ? String(result.stdErr).trim() : "";
+
+    if (exitCode === 0) {
+      const parsed = parseFirstJsonObjectFromOutput(stdOut);
+      if (parsed && typeof parsed === "object") {
+        return {
+          status: parsed.status || "ok",
+          results: Array.isArray(parsed.results) ? parsed.results : [],
+        };
+      }
+
+      return {
+        status: "error",
+        message: "Query script returned an unexpected response.",
+        details: stdOut,
+      };
+    }
+
+    if (stdErr.includes("Missing dependency")) {
+      return { status: "dependency_missing", message: stdErr };
+    }
+
+    if (exitCode === 3 || stdErr.toLowerCase().includes("invalid json")) {
+      return { status: "invalid", message: stdErr || "Invalid filter JSON provided." };
+    }
+
+    if (exitCode === 4 || stdErr.toLowerCase().includes("limit")) {
+      return {
+        status: "invalid_limit",
+        message: stdErr || "Invalid result limit provided.",
+      };
+    }
+
+    return {
+      status: "error",
+      message: stdErr || "Find query failed.",
+      exitCode,
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      message: (error && error.message) || "Find query execution failed.",
+      error,
+    };
+  }
+}
+
+async function runAggregateQueryInConnection(connection, { collection, pipeline, limit }) {
+  if (!connection || !connection.uri) {
+    return {
+      status: "error",
+      message: "Active connection is missing a MongoDB URI.",
+    };
+  }
+
+  if (!Neutralino || !Neutralino.os || typeof Neutralino.os.execCommand !== "function") {
+    return {
+      status: "error",
+      message: "Neutralino OS command execution is unavailable.",
+    };
+  }
+
+  const escapedUri = escapeShellDoubleQuotes(connection.uri);
+  const escapedCollection = escapeShellDoubleQuotes(collection);
+  const pipelineJson = JSON.stringify(pipeline);
+  const escapedPipeline = escapeShellDoubleQuotes(pipelineJson);
+  const escapedLimit = escapeShellDoubleQuotes(String(limit));
+  const command = `node resources/scripts/runAggregatePipeline.js "${escapedUri}" "${escapedCollection}" "${escapedPipeline}" "${escapedLimit}"`;
+
+  try {
+    const result = await Neutralino.os.execCommand(command);
+    const exitCode = result && typeof result.exitCode !== "undefined" ? Number(result.exitCode) : null;
+    const stdOut = result && result.stdOut ? String(result.stdOut).trim() : "";
+    const stdErr = result && result.stdErr ? String(result.stdErr).trim() : "";
+
+    if (exitCode === 0) {
+      const parsed = parseFirstJsonObjectFromOutput(stdOut);
+      if (parsed && typeof parsed === "object") {
+        return {
+          status: parsed.status || "ok",
+          results: Array.isArray(parsed.results) ? parsed.results : [],
+        };
+      }
+
+      return {
+        status: "error",
+        message: "Aggregation script returned an unexpected response.",
+        details: stdOut,
+      };
+    }
+
+    if (stdErr.includes("Missing dependency")) {
+      return { status: "dependency_missing", message: stdErr };
+    }
+
+    if (exitCode === 3 || stdErr.toLowerCase().includes("invalid json")) {
+      return { status: "invalid", message: stdErr || "Invalid pipeline JSON provided." };
+    }
+
+    if (exitCode === 4 || stdErr.toLowerCase().includes("limit")) {
+      return {
+        status: "invalid_limit",
+        message: stdErr || "Invalid result limit provided.",
+      };
+    }
+
+    return {
+      status: "error",
+      message: stdErr || "Aggregation query failed.",
+      exitCode,
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      message: (error && error.message) || "Aggregation execution failed.",
       error,
     };
   }
@@ -880,7 +1955,7 @@ async function loadCollectionsForActiveConnection() {
 }
 
 async function processClipboardContent(clipboardText) {
-  if (!isClipboardScanEnabled) {
+  if (!isClipboardWatcherActive()) {
     return;
   }
 
@@ -888,7 +1963,7 @@ async function processClipboardContent(clipboardText) {
 
   if (!trimmed) {
     setObjectIdInputValue("", { fromClipboard: true });
-    renderClipboardIdleState();
+    renderClipboardIdleState(LOOKUP_MODES.OBJECT_ID);
     return;
   }
 
@@ -899,7 +1974,7 @@ async function processClipboardContent(clipboardText) {
       `Clipboard is not a valid ObjectId. First line: ${preview || "(empty)"}`,
       "error",
     );
-    clearClipboardOutput();
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
     return;
   }
 
@@ -911,8 +1986,8 @@ function handleManualLookupRequest(rawValue, { showInvalidFeedback = false } = {
   const trimmed = typeof rawValue === "string" ? rawValue.trim() : "";
 
   if (!trimmed) {
-    renderClipboardIdleState();
-    clearClipboardOutput();
+    renderClipboardIdleState(LOOKUP_MODES.OBJECT_ID);
+    clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
     return Promise.resolve();
   }
 
@@ -924,9 +1999,9 @@ function handleManualLookupRequest(rawValue, { showInvalidFeedback = false } = {
       } else {
         updateClipboardMessage("Enter a valid ObjectId to search.", "info");
       }
-      clearClipboardOutput();
+      clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
     } else {
-      renderClipboardIdleState();
+      renderClipboardIdleState(LOOKUP_MODES.OBJECT_ID);
     }
 
     return Promise.resolve();
@@ -939,7 +2014,7 @@ function handleManualLookupRequest(rawValue, { showInvalidFeedback = false } = {
 
 // Function to monitor clipboard content
 async function getClipboardContent() {
-  if (!CLIPBOARD_MONITORING_ENABLED || !isClipboardScanEnabled) {
+  if (!isClipboardWatcherActive()) {
     return;
   }
 
@@ -1834,13 +2909,27 @@ function renderForm(formState) {
   }
 }
 
-function setupObjectIdInput() {
-  const input = getObjectIdInputElement();
-  if (input) {
-    input.addEventListener("input", (event) => {
+function setupDocumentLookupUi() {
+  setupLookupOutputCopyButtons();
+  const tabButtons = getLookupModeButtons();
+  tabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const mode = button.dataset.lookupMode;
+      setActiveLookupMode(mode);
+      button.focus();
+    });
+
+    button.addEventListener("keydown", handleLookupTabKeydown);
+  });
+
+  applyLookupModeState();
+
+  const objectIdInput = getObjectIdInputElement();
+  if (objectIdInput) {
+    objectIdInput.addEventListener("input", (event) => {
       setObjectIdInputValue(event.target.value || "");
 
-      if (isClipboardScanEnabled) {
+      if (isClipboardWatcherActive()) {
         return;
       }
 
@@ -1851,7 +2940,7 @@ function setupObjectIdInput() {
       });
     });
 
-    input.addEventListener("keydown", (event) => {
+    objectIdInput.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") {
         return;
       }
@@ -1866,10 +2955,35 @@ function setupObjectIdInput() {
     });
   }
 
-  const toggle = getClipboardScanToggleElement();
-  if (toggle) {
-    toggle.checked = Boolean(isClipboardScanEnabled);
-    toggle.addEventListener("change", (event) => {
+  const objectIdRunButton = getObjectIdRunButtonElement();
+  if (objectIdRunButton) {
+    objectIdRunButton.addEventListener("click", () => {
+      if (objectIdRunButton.disabled) {
+        return;
+      }
+
+      isObjectIdRunInFlight = true;
+      setButtonBusy(objectIdRunButton, true);
+      updateObjectIdControlsState();
+
+      handleManualLookupRequest(objectIdInputValue, {
+        showInvalidFeedback: true,
+      })
+        .catch((error) => {
+          console.error("Manual ObjectId lookup failed:", error);
+        })
+        .finally(() => {
+          isObjectIdRunInFlight = false;
+          setButtonBusy(objectIdRunButton, false);
+          updateObjectIdControlsState();
+        });
+    });
+  }
+
+  const clipboardToggle = getClipboardScanToggleElement();
+  if (clipboardToggle) {
+    clipboardToggle.checked = Boolean(isClipboardScanEnabled);
+    clipboardToggle.addEventListener("change", (event) => {
       const { checked } = event.target;
       setClipboardScanEnabled(checked);
 
@@ -1883,6 +2997,100 @@ function setupObjectIdInput() {
     });
   }
 
+  const findCollectionSelect = document.getElementById(FIND_COLLECTION_SELECT_ID);
+  if (findCollectionSelect) {
+    findCollectionSelect.addEventListener("change", (event) => {
+      findModeState.collection = event.target.value || "";
+      updateFindRunButtonState();
+    });
+  }
+
+  const findFilterInput = document.getElementById(FIND_FILTER_INPUT_ID);
+  if (findFilterInput) {
+    findFilterInput.addEventListener("input", (event) => {
+      handleFindFilterChange(event.target.value);
+    });
+  }
+
+  const findLimitInput = document.getElementById(FIND_LIMIT_INPUT_ID);
+  if (findLimitInput) {
+    findLimitInput.value = String(findModeState.limit);
+    normalizeResultLimitInput(findLimitInput, findModeState);
+    findLimitInput.addEventListener("input", (event) => {
+      normalizeResultLimitInput(event.target, findModeState);
+      updateFindRunButtonState();
+    });
+    findLimitInput.addEventListener("blur", (event) => {
+      if (!findModeState.isLimitValid) {
+        event.target.reportValidity();
+      }
+    });
+  }
+
+  const findRunButton = document.getElementById(FIND_RUN_BUTTON_ID);
+  if (findRunButton) {
+    findRunButton.addEventListener("click", () => {
+      executeFindQuery().catch((error) => {
+        console.error("Find query execution failed:", error);
+      });
+    });
+  }
+
+  const aggregateCollectionSelect = document.getElementById(
+    AGGREGATE_COLLECTION_SELECT_ID,
+  );
+  if (aggregateCollectionSelect) {
+    aggregateCollectionSelect.addEventListener("change", (event) => {
+      aggregateModeState.collection = event.target.value || "";
+      updateAggregateRunButtonState();
+    });
+  }
+
+  const aggregatePipelineInput = document.getElementById(
+    AGGREGATE_PIPELINE_INPUT_ID,
+  );
+  if (aggregatePipelineInput) {
+    aggregatePipelineInput.addEventListener("input", (event) => {
+      handleAggregatePipelineChange(event.target.value);
+    });
+  }
+
+  const aggregateLimitInput = document.getElementById(AGGREGATE_LIMIT_INPUT_ID);
+  if (aggregateLimitInput) {
+    aggregateLimitInput.value = String(aggregateModeState.limit);
+    normalizeResultLimitInput(aggregateLimitInput, aggregateModeState);
+    aggregateLimitInput.addEventListener("input", (event) => {
+      normalizeResultLimitInput(event.target, aggregateModeState);
+      updateAggregateRunButtonState();
+    });
+    aggregateLimitInput.addEventListener("blur", (event) => {
+      if (!aggregateModeState.isLimitValid) {
+        event.target.reportValidity();
+      }
+    });
+  }
+
+  const aggregateRunButton = document.getElementById(AGGREGATE_RUN_BUTTON_ID);
+  if (aggregateRunButton) {
+    aggregateRunButton.addEventListener("click", () => {
+      executeAggregateQuery().catch((error) => {
+        console.error("Aggregate query execution failed:", error);
+      });
+    });
+  }
+
+  const {
+    activeConnectionCollections,
+    activeConnectionId,
+    collectionsStatus,
+  } = store.getState();
+  syncLookupCollectionDropdowns(activeConnectionCollections, {
+    connectionId: activeConnectionId,
+    status: collectionsStatus,
+  });
+
+  updateFindRunButtonState();
+  updateAggregateRunButtonState();
   applyClipboardScanState();
 }
 
@@ -2063,6 +3271,10 @@ store.subscribe((state) => {
   renderConnections(state.connections, state.activeConnectionId);
   renderForm(state.currentForm);
   renderCollectionsSection(state);
+  syncLookupCollectionDropdowns(state.activeConnectionCollections, {
+    connectionId: state.activeConnectionId,
+    status: state.collectionsStatus,
+  });
 
   if (state.connections !== lastConnectionsSnapshot) {
     lastConnectionsSnapshot = state.connections;
@@ -2086,6 +3298,7 @@ store.subscribe((state) => {
 
   if (state.activeConnectionId !== lastActiveConnectionId) {
     lastActiveConnectionId = state.activeConnectionId;
+    clearAllLookupOutputs();
     if (CLIPBOARD_MONITORING_ENABLED && isClipboardScanEnabled) {
       if (typeof lastClipboardContent === "string" && lastClipboardContent) {
         processClipboardContent(lastClipboardContent).catch((error) => {
@@ -2117,6 +3330,7 @@ async function init() {
   await loadConnections(); // Load connections from file
   const { connections, activeConnectionId } = store.getState();
   renderConnections(connections, activeConnectionId); // Initial render
+  clearAllLookupOutputs();
   renderClipboardIdleState();
 
   if (CLIPBOARD_MONITORING_ENABLED) {
@@ -2150,7 +3364,7 @@ document.addEventListener(MENU_EVENT_NAME, (event) => {
   });
 });
 
-setupObjectIdInput();
+setupDocumentLookupUi();
 setupSidebarToggle();
 registerEditingShortcuts();
 init();
