@@ -799,7 +799,18 @@ function renderLookupLoadingMessage(message, mode = activeLookupMode) {
     return;
   }
 
-  outputElement.textContent = message || "Running lookup...";
+  const spinner = document.createElement("span");
+  spinner.className =
+    "inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent";
+  spinner.setAttribute("aria-hidden", "true");
+
+  const textNode = document.createTextNode(
+    ` ${message || "Running lookup..."}`,
+  );
+
+  outputElement.textContent = "";
+  outputElement.appendChild(spinner);
+  outputElement.appendChild(textNode);
   outputElement.classList.remove("hidden");
 
   const container = getLookupOutputContainer(mode);
