@@ -194,12 +194,8 @@ async function main() {
         stringifyWithObjectIdSupport(
           {
             status: 'too_large',
-            message: [
-              'Lookup result is too large to return in full.',
-              `Approximate size: ${bytes} bytes.`,
-              `Maximum supported size: ${MAX_LOOKUP_STDOUT_BYTES} bytes.`,
-              'Try projecting fewer fields or using an aggregation pipeline to trim the document.',
-            ].join(' '),
+            message:
+              'Lookup result is too large to return in full. Try trimming large fields in the document before retrying.',
             approxSizeBytes: bytes,
             maxSizeBytes: MAX_LOOKUP_STDOUT_BYTES,
             matchesMetadata,
