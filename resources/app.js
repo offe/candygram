@@ -1639,6 +1639,13 @@ async function lookupObjectIdInConnection(connection, objectId) {
         }
       }
 
+      logUnexpectedScriptResponse("lookup-objectid", {
+        command,
+        exitCode,
+        stdOut,
+        stdErr,
+      });
+
       return {
         status: "error",
         message: "Lookup script returned an unexpected response.",
@@ -1696,6 +1703,37 @@ function parseFirstJsonObjectFromOutput(stdOut) {
   }
 
   return null;
+}
+
+function logUnexpectedScriptResponse(context, details) {
+  const { command, exitCode, stdOut, stdErr } = details;
+  const parts = [
+    `[${context}] Unexpected script response`,
+    `command=${command || "(unknown)"}`,
+    `exitCode=${typeof exitCode === "number" ? exitCode : "(none)"}`,
+  ];
+
+  if (stdOut) {
+    parts.push(`stdout=${stdOut}`);
+  }
+
+  if (stdErr) {
+    parts.push(`stderr=${stdErr}`);
+  }
+
+  const message = parts.join(" | ");
+
+  if (typeof console !== "undefined" && typeof console.error === "function") {
+    console.error(message);
+  }
+
+  if (
+    typeof Neutralino !== "undefined" &&
+    Neutralino.debug &&
+    typeof Neutralino.debug.log === "function"
+  ) {
+    Neutralino.debug.log(message);
+  }
 }
 
 async function runFindQueryInConnection(connection, { collection, filter, limit }) {
