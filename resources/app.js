@@ -2071,8 +2071,13 @@ async function processClipboardContent(clipboardText) {
   const objectId = extractObjectIdFromClipboard(trimmed);
   if (!objectId) {
     const preview = getFirstClipboardLine(clipboardText);
+    const hasMultipleLines = /\r?\n/.test(String(clipboardText || ""));
+    const message = hasMultipleLines
+      ? `Clipboard is not a valid ObjectId. First line: ${preview || "(empty)"}`
+      : `Clipboard is not a valid ObjectId: ${preview || "(empty)"}`;
+
     updateClipboardMessage(
-      `Clipboard is not a valid ObjectId. First line: ${preview || "(empty)"}`,
+      message,
       "error",
     );
     clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
