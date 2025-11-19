@@ -553,6 +553,24 @@ function formatDocumentCount(count) {
   return `${normalized} ${noun} found`;
 }
 
+function formatByteSize(bytes) {
+  if (!Number.isFinite(bytes)) {
+    return null;
+  }
+
+  const units = ["bytes", "KB", "MB", "GB"];
+  let size = Math.max(0, bytes);
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  const rounded = unitIndex === 0 ? Math.round(size) : size.toFixed(1);
+  return `${rounded} ${units[unitIndex]}`;
+}
+
 function setLookupDocumentCount(
   mode = activeLookupMode,
   count = null,
@@ -781,7 +799,18 @@ function renderLookupLoadingMessage(message, mode = activeLookupMode) {
     return;
   }
 
-  outputElement.textContent = message || "Running lookup...";
+  const spinner = document.createElement("span");
+  spinner.className =
+    "inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent";
+  spinner.setAttribute("aria-hidden", "true");
+
+  const textNode = document.createTextNode(
+    ` ${message || "Running lookup..."}`,
+  );
+
+  outputElement.textContent = "";
+  outputElement.appendChild(spinner);
+  outputElement.appendChild(textNode);
   outputElement.classList.remove("hidden");
 
   const container = getLookupOutputContainer(mode);
@@ -1560,6 +1589,41 @@ async function runObjectIdLookup(objectId, { source = "clipboard" } = {}) {
       return;
     }
 
+    if (lookupResult.status === "too_large") {
+      const approxSize = formatByteSize(lookupResult.approxSizeBytes);
+      const maxSize = formatByteSize(lookupResult.maxSizeBytes);
+      const sizeDetails = [];
+
+      if (approxSize || lookupResult.approxSizeBytes) {
+        sizeDetails.push(
+          `Approximate size: ${approxSize || `${lookupResult.approxSizeBytes} bytes`}`,
+        );
+      }
+
+      if (maxSize || lookupResult.maxSizeBytes) {
+        sizeDetails.push(`Maximum supported size: ${maxSize || `${lookupResult.maxSizeBytes} bytes`}`);
+      }
+
+      const messageParts = [
+        lookupResult.message || "Lookup result is too large to display.",
+        sizeDetails.join(" "),
+      ].filter(Boolean);
+
+      updateClipboardMessage(messageParts.join(" "), "error");
+
+      if (typeof console !== "undefined" && typeof console.error === "function") {
+        console.error("[lookup-objectid] Result too large to render", {
+          approxSizeBytes: lookupResult.approxSizeBytes,
+          maxSizeBytes: lookupResult.maxSizeBytes,
+          matchesMetadata: lookupResult.matchesMetadata,
+          collections: lookupResult.collections,
+        });
+      }
+
+      clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);
+      return;
+    }
+
     updateClipboardMessage(
       lookupResult.message || "Failed to search for the ObjectId.",
       "error",
@@ -1631,6 +1695,16 @@ async function lookupObjectIdInConnection(connection, objectId) {
                 matches: Array.isArray(parsed.matches) ? parsed.matches : [],
                 collections,
                 readOnly,
+                message: typeof parsed.message === "string" ? parsed.message : null,
+                matchesMetadata: Array.isArray(parsed.matchesMetadata)
+                  ? parsed.matchesMetadata
+                  : [],
+                approxSizeBytes: Number.isFinite(parsed.approxSizeBytes)
+                  ? Number(parsed.approxSizeBytes)
+                  : null,
+                maxSizeBytes: Number.isFinite(parsed.maxSizeBytes)
+                  ? Number(parsed.maxSizeBytes)
+                  : null,
               };
             }
           } catch (jsonError) {
@@ -1638,6 +1712,13 @@ async function lookupObjectIdInConnection(connection, objectId) {
           }
         }
       }
+
+      logUnexpectedScriptResponse("lookup-objectid", {
+        command,
+        exitCode,
+        stdOut,
+        stdErr,
+      });
 
       return {
         status: "error",
@@ -1696,6 +1777,37 @@ function parseFirstJsonObjectFromOutput(stdOut) {
   }
 
   return null;
+}
+
+function logUnexpectedScriptResponse(context, details) {
+  const { command, exitCode, stdOut, stdErr } = details;
+  const parts = [
+    `[${context}] Unexpected script response`,
+    `command=${command || "(unknown)"}`,
+    `exitCode=${typeof exitCode === "number" ? exitCode : "(none)"}`,
+  ];
+
+  if (stdOut) {
+    parts.push(`stdout=${stdOut}`);
+  }
+
+  if (stdErr) {
+    parts.push(`stderr=${stdErr}`);
+  }
+
+  const message = parts.join(" | ");
+
+  if (typeof console !== "undefined" && typeof console.error === "function") {
+    console.error(message);
+  }
+
+  if (
+    typeof Neutralino !== "undefined" &&
+    Neutralino.debug &&
+    typeof Neutralino.debug.log === "function"
+  ) {
+    Neutralino.debug.log(message);
+  }
 }
 
 async function runFindQueryInConnection(connection, { collection, filter, limit }) {
@@ -1970,8 +2082,13 @@ async function processClipboardContent(clipboardText) {
   const objectId = extractObjectIdFromClipboard(trimmed);
   if (!objectId) {
     const preview = getFirstClipboardLine(clipboardText);
+    const hasMultipleLines = /\r?\n/.test(String(clipboardText || ""));
+    const message = hasMultipleLines
+      ? `Clipboard is not a valid ObjectId. First line: ${preview || "(empty)"}`
+      : `Clipboard is not a valid ObjectId: ${preview || "(empty)"}`;
+
     updateClipboardMessage(
-      `Clipboard is not a valid ObjectId. First line: ${preview || "(empty)"}`,
+      message,
       "error",
     );
     clearClipboardOutput(LOOKUP_MODES.OBJECT_ID);

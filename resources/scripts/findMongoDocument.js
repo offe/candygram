@@ -6,6 +6,26 @@ const {
   isEffectivelyReadOnly,
 } = require('./mongodbConnectionInfo');
 
+const MAX_LOOKUP_STDOUT_BYTES = 500 * 1024; // 500 KB safety threshold for Neutralino stdout
+
+function stringifyWithObjectIdSupport(value, ObjectId) {
+  return JSON.stringify(value, (_, current) => {
+    if (current instanceof ObjectId) {
+      return current.toHexString();
+    }
+
+    return current;
+  });
+}
+
+function estimateJsonBytes(value, ObjectId) {
+  const json = stringifyWithObjectIdSupport(value, ObjectId);
+  return {
+    json,
+    bytes: Buffer.byteLength(json, 'utf8'),
+  };
+}
+
 async function main() {
   const uri = process.argv[2];
   const objectIdValue = process.argv[3];
@@ -148,25 +168,51 @@ async function main() {
       return;
     }
 
-    console.log(
-      JSON.stringify(
-        {
-          status: 'found',
-          matches,
-          collections,
-          readOnly:
-            privilegeInfo && typeof privilegeInfo.readOnly === 'boolean'
-              ? privilegeInfo.readOnly
-              : null,
-        },
-        (_, value) => {
-          if (value instanceof ObjectId) {
-            return value.toHexString();
-          }
-          return value;
-        }
-      )
-    );
+    const responsePayload = {
+      status: 'found',
+      matches,
+      collections,
+      readOnly:
+        privilegeInfo && typeof privilegeInfo.readOnly === 'boolean'
+          ? privilegeInfo.readOnly
+          : null,
+    };
+
+    const { json, bytes } = estimateJsonBytes(responsePayload, ObjectId);
+
+    if (bytes > MAX_LOOKUP_STDOUT_BYTES) {
+      const matchesMetadata = matches.map((match) => {
+        const documentSizeBytes = estimateJsonBytes(match.document, ObjectId).bytes;
+
+        return {
+          collection: match.collection,
+          approxDocumentSizeBytes: documentSizeBytes,
+        };
+      });
+
+      console.log(
+        stringifyWithObjectIdSupport(
+          {
+            status: 'too_large',
+            message:
+              'Lookup result is too large to return in full. Try trimming large fields in the document before retrying.',
+            approxSizeBytes: bytes,
+            maxSizeBytes: MAX_LOOKUP_STDOUT_BYTES,
+            matchesMetadata,
+            collections,
+            readOnly:
+              privilegeInfo && typeof privilegeInfo.readOnly === 'boolean'
+                ? privilegeInfo.readOnly
+                : null,
+          },
+          ObjectId
+        )
+      );
+      process.exit(0);
+      return;
+    }
+
+    console.log(json);
     process.exit(0);
   } catch (error) {
     const message = error && error.stack ? error.stack : String(error);
